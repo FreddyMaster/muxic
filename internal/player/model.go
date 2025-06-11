@@ -5,6 +5,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gopxl/beep"
@@ -16,7 +17,8 @@ import (
 )
 
 type Model struct {
-	Table           table.Model           // Table UI component.
+	Table           table.Model // Table UI component.
+	textInput       textinput.Model
 	Columns         []table.Column        // Table columns definition.
 	Rows            []table.Row           // Table rows that list audio files.
 	Paths           []string              // List of audio file paths.
@@ -82,9 +84,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, SkipForwardCmd(m)
 		case key.Matches(msg, util.DefaultKeyMap.SkipBackward):
 			return m, SkipBackwardCmd(m)
+		case key.Matches(msg, util.DefaultKeyMap.Search):
+			return m, SearchCmd(m)
 		}
 	}
 	m.Table, _ = m.Table.Update(msg)
+	m.textInput, _ = m.textInput.Update(msg)
 	return m, nil
 }
 
@@ -92,15 +97,14 @@ func (m *Model) resize(width, height int) {
 	m.Width = width
 	m.Height = height
 	// Calculate available width accounting for borders, padding, and column separators
-	available := width - 4 - (5 * 2) - 4 // 4 for borders, 2*5=10 for padding, 4 for column separators
+	available := width - 4 // 4 for borders, 2*5=10 for padding, 4 for column separators
 	if available < 40 {
 		available = 40
 	}
 	// Fixed widths for number and year columns
-	numWidth := 5
-	yearWidth := 6
+	durationWidth := 10
 	// Calculate remaining width for other columns
-	remainingWidth := available - numWidth - yearWidth - 2 // -2 for the separators
+	remainingWidth := available - durationWidth - 2 // -2 for the separators
 	// Distribute remaining width: 40% title, 40% artist, 20% album
 	titleWidth := remainingWidth * 40 / 100
 	artistWidth := remainingWidth * 40 / 100
@@ -115,13 +119,13 @@ func (m *Model) resize(width, height int) {
 	if albumWidth < 8 {
 		albumWidth = 8
 	}
+
 	// Define table columns based on calculated widths
 	m.Columns = []table.Column{
-		{Title: "#", Width: numWidth},
 		{Title: "Title", Width: titleWidth},
 		{Title: "Artist", Width: artistWidth},
 		{Title: "Album", Width: albumWidth},
-		{Title: "Year", Width: yearWidth},
+		{Title: "Duration", Width: durationWidth},
 	}
 	// Calculate available height for the table
 	headerHeight := 4 // Title + help + empty line
@@ -143,20 +147,6 @@ func (m *Model) resize(width, height int) {
 
 // View renders the complete UI layout as a string.
 func (m *Model) View() string {
-	// Title rendering with styling.
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("240")).
-		Render("TUI Music Player v1.0")
-
-	// Help bar styling.
-	help := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240")).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("240")).
-		BorderBottom(true).
-		Render("[F1] Help   [F2] Browse  [F3] Search  [F4] Library  [F5] Playlist  [F6] Queue  [F7] Settings   [Q] Quit")
-
 	// Create a styled time display.
 	timeStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -172,28 +162,34 @@ func (m *Model) View() string {
 	// Build the UI
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		title,
-		"\n"+help,
+		m.textInput.View(),
 		"\n"+m.Table.View(),
 		"\n"+progressBar,
 		timesView,
 	)
 }
 
-// rows and paths should be populated from your directory scan
 func NewModel(rows []table.Row, paths []string) (*Model, error) {
 	columns := ui.DefaultTableColumns()
 	t := ui.NewTable(columns, rows)
 	p := ui.NewProgressBar()
 
+	// Initialize the text input
+	ti := textinput.New()
+	ti.Placeholder = "Search..."
+	ti.Prompt = "🔍 "
+	ti.CharLimit = 50
+	ti.Width = 50
+
 	return &Model{
-		Table:    t,
-		Columns:  columns,
-		Rows:     rows,
-		Paths:    paths,
-		Progress: p,
-		Width:    80, // default, will be set by WindowSizeMsg
-		Height:   24, // default, will be set by WindowSizeMsg
+		Table:     t,
+		textInput: ti,
+		Columns:   columns,
+		Rows:      rows,
+		Paths:     paths,
+		Progress:  p,
+		Width:     80, // default, will be set by WindowSizeMsg
+		Height:    24, // default, will be set by WindowSizeMsg
 	}, nil
 }
 
@@ -204,7 +200,6 @@ func (m *Model) Run() error {
 	return err
 }
 
-// Helper: formatDuration as in your original code.
 func formatDuration(d time.Duration) string {
 	totalSeconds := int(d.Seconds())
 	h := totalSeconds / 3600
@@ -216,7 +211,6 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
-// tickMsg and tickCmd as in your original code.
 type tickMsg time.Time
 
 func tickCmd() tea.Cmd {

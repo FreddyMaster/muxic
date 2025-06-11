@@ -8,6 +8,7 @@ import (
 type KeyMap struct {
 	Up           key.Binding
 	Down         key.Binding
+	Play         key.Binding
 	Pause        key.Binding
 	Stop         key.Binding
 	SkipBackward key.Binding
@@ -15,8 +16,9 @@ type KeyMap struct {
 	VolumeUp     key.Binding
 	VolumeDown   key.Binding
 	VolumeMute   key.Binding
-	Play         key.Binding
-	Quit         key.Binding
+
+	Quit   key.Binding
+	Search key.Binding
 }
 
 // DefaultKeyMap provides the default key bindings.
@@ -31,38 +33,43 @@ var DefaultKeyMap = KeyMap{
 	),
 	Play: key.NewBinding(
 		key.WithKeys("enter"),
-		key.WithHelp("enter", "play"),
+		key.WithHelp("enter", "Play/Pause"),
 	),
 	Pause: key.NewBinding(
-		key.WithKeys("space"),
-		key.WithHelp("space", "pause"),
+		key.WithKeys(" ", "p"),
+		key.WithHelp("space/p", "Play/Pause"),
 	),
 	Stop: key.NewBinding(
-		key.WithKeys("s"),
-		key.WithHelp("s", "stop"),
+		key.WithKeys("ctrl+s"),
+		key.WithHelp("ctrl+S", "stop"),
 	),
 	SkipBackward: key.NewBinding(
-		key.WithKeys("h", "left"),
-		key.WithHelp("←/h", "skip backward"),
+		key.WithKeys(""+
+			"left", "h"),
+		key.WithHelp("←/h", "Skip Backward"),
 	),
 	SkipForward: key.NewBinding(
-		key.WithKeys("l", "right"),
-		key.WithHelp("→/l", "skip forward"),
+		key.WithKeys("right", "l"),
+		key.WithHelp("→/l", "Skip Forward"),
 	),
 	VolumeUp: key.NewBinding(
-		key.WithKeys("m"),
-		key.WithHelp("m", "volume up"),
+		key.WithKeys("ctrl+up"),
+		key.WithHelp("Ctrl+↑", "Volume Up"),
 	),
 	VolumeDown: key.NewBinding(
-		key.WithKeys("n"),
-		key.WithHelp("n", "volume down"),
+		key.WithKeys("ctrl+down"),
+		key.WithHelp("Ctrl+↓", "Volume Down"),
 	),
 	VolumeMute: key.NewBinding(
-		key.WithKeys("v"),
-		key.WithHelp("v", "mute"),
+		key.WithKeys("ctrl+m"),
+		key.WithHelp("Ctrl+M", "Toggle Mute"),
 	),
 	Quit: key.NewBinding(
-		key.WithKeys("q", "esc", "ctrl+c"),
-		key.WithHelp("q", "quit"),
+		key.WithKeys("ctrl+c"),
+		key.WithHelp("Ctrl+C", "Quit Application"),
+	),
+	Search: key.NewBinding(
+		key.WithKeys("ctrl+f"),
+		key.WithHelp("Ctrl+F", "Search Tracks"),
 	),
 }

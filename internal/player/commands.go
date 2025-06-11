@@ -129,3 +129,32 @@ func VolumeMuteCmd(m *Model) tea.Cmd {
 	}
 	return nil
 }
+
+func SearchCmd(m *Model) tea.Cmd {
+	if m.textInput.Focused() {
+		disableSearch(m)
+		return nil
+	}
+	enableSearch(m)
+	return nil
+}
+
+func disableSearch(m *Model) tea.Cmd {
+	m.textInput.Blur()
+	m.Table.Focus()
+	util.DefaultKeyMap.Play.SetEnabled(true)
+	util.DefaultKeyMap.Pause.SetEnabled(true)
+	util.DefaultKeyMap.SkipForward.SetEnabled(true)
+	util.DefaultKeyMap.SkipBackward.SetEnabled(true)
+	return nil
+}
+
+func enableSearch(m *Model) tea.Cmd {
+	m.textInput.Focus()
+	m.Table.Blur()
+	util.DefaultKeyMap.Play.SetEnabled(false)
+	util.DefaultKeyMap.Pause.SetEnabled(false)
+	util.DefaultKeyMap.SkipForward.SetEnabled(false)
+	util.DefaultKeyMap.SkipBackward.SetEnabled(false)
+	return nil
+}

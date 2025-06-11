@@ -7,11 +7,11 @@ import (
 
 func DefaultTableColumns() []table.Column {
 	return []table.Column{
-		{Title: "#", Width: 6},
 		{Title: "Title", Width: 20},
 		{Title: "Artist", Width: 16},
 		{Title: "Album", Width: 16},
 		{Title: "Year", Width: 6},
+		{Title: "Duration", Width: 8},
 	}
 }
 
