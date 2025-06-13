@@ -12,14 +12,21 @@ import (
 // Enter (play selected file)
 func EnterCmd(m *Model) tea.Cmd {
 	selected := m.Table.Cursor()
-	if selected < 0 || selected >= len(m.Paths) {
+	if selected < 0 || selected >= len(m.searchResultIndices) {
 		return nil
 	}
+
+	// Always use the stored original index
+	pathIndex := m.searchResultIndices[selected]
+	if pathIndex < 0 || pathIndex >= len(m.Paths) {
+		return nil
+	}
+
 	speaker.Clear()
 	if m.CurrentStreamer != nil {
 		_ = m.CurrentStreamer.Close()
 	}
-	streamer, format, totalSamples, err := util.OpenAudioFile(m.Paths[selected])
+	streamer, format, totalSamples, err := util.OpenAudioFile(m.Paths[pathIndex])
 	if err != nil {
 		fmt.Println("Playback error:", err)
 		return nil
@@ -57,6 +64,20 @@ func PauseCmd(m *Model) tea.Cmd {
 	if m.Ctrl != nil {
 		m.Ctrl.Paused = !m.Ctrl.Paused
 	}
+	return nil
+}
+
+// StopCmd stops the current playback
+func StopCmd(m *Model) tea.Cmd {
+	speaker.Clear()
+	m.Playing = false
+	if m.CurrentStreamer != nil {
+		m.CurrentStreamer.Close()
+		m.CurrentStreamer = nil
+	}
+	m.PlayedTime = 0
+	m.SamplesPlayed = 0
+	m.Progress.SetPercent(0)
 	return nil
 }
 
@@ -127,34 +148,5 @@ func VolumeMuteCmd(m *Model) tea.Cmd {
 		m.Volume.Silent = !m.Volume.Silent
 		speaker.Unlock()
 	}
-	return nil
-}
-
-func SearchCmd(m *Model) tea.Cmd {
-	if m.textInput.Focused() {
-		disableSearch(m)
-		return nil
-	}
-	enableSearch(m)
-	return nil
-}
-
-func disableSearch(m *Model) tea.Cmd {
-	m.textInput.Blur()
-	m.Table.Focus()
-	util.DefaultKeyMap.Play.SetEnabled(true)
-	util.DefaultKeyMap.Pause.SetEnabled(true)
-	util.DefaultKeyMap.SkipForward.SetEnabled(true)
-	util.DefaultKeyMap.SkipBackward.SetEnabled(true)
-	return nil
-}
-
-func enableSearch(m *Model) tea.Cmd {
-	m.textInput.Focus()
-	m.Table.Blur()
-	util.DefaultKeyMap.Play.SetEnabled(false)
-	util.DefaultKeyMap.Pause.SetEnabled(false)
-	util.DefaultKeyMap.SkipForward.SetEnabled(false)
-	util.DefaultKeyMap.SkipBackward.SetEnabled(false)
 	return nil
 }
