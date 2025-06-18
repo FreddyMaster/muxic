@@ -5,13 +5,21 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func DefaultTableColumns() []table.Column {
+func DefaultTableColumns(width int) []table.Column {
+	// Fixed widths for duration column
+	durationWidth := 10
+	// Calculate remaining width for other columns
+	remainingWidth := width - durationWidth - 2 // -2 for the separators
+	// Distribute remaining width: 40% title, 40% artist, 20% album
+	titleWidth := remainingWidth * 40 / 100
+	artistWidth := remainingWidth * 40 / 100
+	albumWidth := remainingWidth * 20 / 100
+
 	return []table.Column{
-		{Title: "Title", Width: 20},
-		{Title: "Artist", Width: 16},
-		{Title: "Album", Width: 16},
-		{Title: "Year", Width: 6},
-		{Title: "Duration", Width: 8},
+		{Title: "Title", Width: titleWidth},
+		{Title: "Artist", Width: artistWidth},
+		{Title: "Album", Width: albumWidth},
+		{Title: "Duration", Width: durationWidth},
 	}
 }
 

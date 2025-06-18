@@ -1,9 +1,12 @@
+// Package player implements the main music player interface and logic.
+// It handles audio playback, playlist management, and user interactions.
 package player
 
 import (
 	"fmt"
+	"time"
+
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -11,295 +14,477 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gopxl/beep"
 	"github.com/gopxl/beep/effects"
+
 	"muxic/internal/ui"
 	"muxic/internal/util"
-	"time"
 )
 
-type Model struct {
-	Table               table.Model // Table UI component.
-	textInput           textinput.Model
-	playlistList        list.Model
-	Columns             []table.Column        // Table columns definition.
-	Rows                []table.Row           // Table rows that list audio files.
-	AllRows             []table.Row           // All available rows
-	Paths               []string              // List of audio file paths.
-	searchResultIndices []int                 // Original indices of search results
-	Width               int                   // Screen width.
-	Height              int                   // Screen height.
-	Progress            progress.Model        // Progress bar component.
-	ProgressWidth       int                   // Width of the progress bar.
-	CurrentStreamer     beep.StreamSeekCloser // Current audio streamer.
-	Playing             bool                  // Flag for whether audio is playing.
-	TotalSamples        int                   // Total number of audio samples in current file.
-	SampleRate          beep.SampleRate       // Sample rate of current audio file.
-	SamplesPlayed       int                   // Number of samples that have been played.
-	PlayedTime          time.Duration         // Time elapsed during playback.
-	TotalTime           time.Duration         // Total playback time.
-	Ctrl                *beep.Ctrl
-	Volume              *effects.Volume
-	searchIndex         *util.SearchIndex
-	isSearching         bool
-	viewMode            ViewMode
-}
-
+// ViewMode represents the different views in the application
 type ViewMode int
 
+// Application view modes
 const (
+	// ViewLibrary shows the music library
 	ViewLibrary ViewMode = iota
+	// ViewPlaylists shows the list of playlists
 	ViewPlaylists
+	// ViewPlaylistTracks shows tracks in the selected playlist
 	ViewPlaylistTracks
 )
 
+// String returns a human-readable representation of the view mode
+func (v ViewMode) String() string {
+	switch v {
+	case ViewLibrary:
+		return "Library"
+	case ViewPlaylists:
+		return "Playlists"
+	case ViewPlaylistTracks:
+		return "Playlist Tracks"
+	default:
+		return "Unknown View"
+	}
+}
+
+// IsPlaylistView returns true if the current view is related to playlists
+func (v ViewMode) IsPlaylistView() bool {
+	return v == ViewPlaylists || v == ViewPlaylistTracks
+}
+
+// Model represents the main application state and UI components
+type Model struct {
+	// UI Components
+	Table        table.Model     // Main library table view
+	textInput    textinput.Model // Search input field
+	playlistList table.Model     // Playlist tracks table
+	Progress     progress.Model  // Playback progress bar
+
+	// Library Data
+	Columns []table.Column // Table column definitions
+	Rows    []table.Row    // Currently visible rows (filtered)
+	AllRows []table.Row    // All available rows (unfiltered)
+	Paths   []string       // File paths for audio files
+
+	// Search State
+	searchIndex         *util.SearchIndex // Search index for library
+	searchResultIndices []int             // Original indices of search results
+	isSearching         bool              // Whether search is active
+
+	// Audio Playback State
+	CurrentStreamer beep.StreamSeekCloser // Current audio stream
+	Playing         bool                  // Whether audio is playing
+	TotalSamples    int                   // Total samples in current track
+	SampleRate      beep.SampleRate       // Audio sample rate
+	SamplesPlayed   int                   // Samples played so far
+	PlayedTime      time.Duration         // Formatted play time
+	TotalTime       time.Duration         // Total track duration
+	Ctrl            *beep.Ctrl            // Playback controller
+	Volume          *effects.Volume       // Volume controller
+
+	// Application State
+	viewMode ViewMode // Current view
+
+	// Layout Dimensions
+	Width         int // Window width
+	Height        int // Window height
+	ProgressWidth int // Width of progress bar
+}
+
+// tickMsg is sent on each tick of the progress updater
 type tickMsg time.Time
+
+// tickCmd returns a command that sends a tickMsg after a short duration
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second/10, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
 
 // Init initializes the application and starts the tick command.
 func (m *Model) Init() tea.Cmd {
-	// Start the ticker to regularly update progress.
 	return tickCmd()
 }
 
-// Update is the main update loop handling incoming messages.
-func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.resize(msg.Width, msg.Height)
-		// Forward the window size message to the playlist list
-		if m.viewMode == ViewPlaylists || m.viewMode == ViewPlaylistTracks {
-			var cmd tea.Cmd
-			m.playlistList, cmd = m.playlistList.Update(msg)
-			return m, cmd
-		}
-		return m, nil
-
-	case tickMsg:
-		if m.Playing && m.TotalSamples > 0 {
-			percent := float64(m.SamplesPlayed) / float64(m.TotalSamples)
-			if percent > 1.0 {
-				percent = 1.0
-				m.Playing = false
-			}
-			cmd := m.Progress.SetPercent(percent)
-			return m, tea.Batch(tickCmd(), cmd)
-		}
+// handleTick updates the progress bar based on playback progress
+func (m *Model) handleTick() (tea.Model, tea.Cmd) {
+	if !m.Playing || m.TotalSamples <= 0 {
 		return m, tickCmd()
-
-	case progress.FrameMsg:
-		pm, cmd := m.Progress.Update(msg)
-		m.Progress = pm.(progress.Model)
-		return m, cmd
-
-	case tea.KeyMsg:
-		switch {
-		case key.Matches(msg, util.DefaultKeyMap.Quit):
-			if m.viewMode == ViewPlaylists || m.viewMode == ViewPlaylistTracks {
-				m.viewMode = ViewLibrary
-				return m, nil
-			}
-			return m, tea.Quit
-
-		// Forward key messages to the playlist list when in playlist view
-		case m.viewMode == ViewPlaylists || m.viewMode == ViewPlaylistTracks:
-			var cmd tea.Cmd
-			m.playlistList, cmd = m.playlistList.Update(msg)
-			return m, cmd
-
-		// View switching
-		case key.Matches(msg, util.DefaultKeyMap.ToggleView):
-			if m.viewMode == ViewLibrary {
-				m.viewMode = ViewPlaylists
-			} else {
-				m.viewMode = ViewLibrary
-			}
-			return m, nil
-
-		// Playback controls
-		case key.Matches(msg, util.DefaultKeyMap.Play):
-			return m, EnterCmd(m)
-		case key.Matches(msg, util.DefaultKeyMap.Pause):
-			return m, PauseCmd(m)
-		case key.Matches(msg, util.DefaultKeyMap.Stop):
-			return m, StopCmd(m)
-		case key.Matches(msg, util.DefaultKeyMap.SkipBackward):
-			return m, SkipBackwardCmd(m)
-		case key.Matches(msg, util.DefaultKeyMap.SkipForward):
-			return m, SkipForwardCmd(m)
-		case key.Matches(msg, util.DefaultKeyMap.VolumeUp):
-			return m, VolumeUpCmd(m)
-		case key.Matches(msg, util.DefaultKeyMap.VolumeDown):
-			return m, VolumeDownCmd(m)
-		case key.Matches(msg, util.DefaultKeyMap.VolumeMute):
-			return m, VolumeMuteCmd(m)
-
-		// Search
-		case key.Matches(msg, util.DefaultKeyMap.Search):
-			if m.viewMode == ViewLibrary {
-				m.isSearching = !m.isSearching
-				if m.isSearching {
-					m.textInput.Focus()
-				} else {
-					m.textInput.Blur()
-				}
-			}
-			return m, nil
-		}
 	}
 
-	// Update the appropriate component based on current view mode and focus
-	if m.isSearching && m.viewMode == ViewLibrary {
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.Type {
-			case tea.KeyEnter, tea.KeyEscape:
-				m.isSearching = false
-				m.textInput.Blur()
-				return m, nil
-			}
-
-			m.textInput, cmd = m.textInput.Update(msg)
-
-			// Update search results
-			query := m.textInput.Value()
-			if query == "" {
-				// If search is empty, show all rows with their original indices
-				m.Rows = m.AllRows
-				m.searchResultIndices = make([]int, len(m.AllRows))
-				for i := range m.AllRows {
-					m.searchResultIndices[i] = i
-				}
-			} else {
-				// Otherwise, get the search results with their original indices
-				m.Rows, m.searchResultIndices = m.searchIndex.Search(query)
-			}
-			m.Table.SetRows(m.Rows)
-			return m, cmd
-		}
+	percent := float64(m.SamplesPlayed) / float64(m.TotalSamples)
+	if percent > 1.0 {
+		percent = 1.0
+		m.Playing = false
 	}
 
-	switch m.viewMode {
-	case ViewLibrary:
-		m.Table, cmd = m.Table.Update(msg)
-	case ViewPlaylists, ViewPlaylistTracks:
+	cmd := m.Progress.SetPercent(percent)
+	return m, tea.Batch(tickCmd(), cmd)
+}
+
+// handleWindowSize handles window resize events
+func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.resize(msg.Width, msg.Height)
+
+	// Forward the window size to the active view
+	var cmd tea.Cmd
+	if m.viewMode.IsPlaylistView() {
 		m.playlistList, cmd = m.playlistList.Update(msg)
 	}
+	return m, cmd
+}
+
+// handleProgressFrame processes progress bar frame updates
+func (m *Model) handleProgressFrame(msg progress.FrameMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	var progressModel tea.Model
+
+	// Update the progress bar and type assert the result
+	progressModel, cmd = m.Progress.Update(msg)
+	m.Progress = progressModel.(progress.Model)
 
 	return m, cmd
 }
 
+// handleKeyPress processes keyboard input
+func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+
+	// View switching
+	case key.Matches(msg, util.DefaultKeyMap.ToggleView):
+		return m.toggleView()
+
+	// Playback controls
+	case key.Matches(msg, util.DefaultKeyMap.Play):
+		return m, EnterCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.Pause):
+		return m, PauseCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.Stop):
+		return m, StopCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.SkipBackward):
+		return m, SkipBackwardCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.SkipForward):
+		return m, SkipForwardCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.VolumeUp):
+		return m, VolumeUpCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.VolumeDown):
+		return m, VolumeDownCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.VolumeMute):
+		return m, VolumeMuteCmd(m)
+
+	// Search
+	case key.Matches(msg, util.DefaultKeyMap.Search):
+		return m.toggleSearch()
+
+	// Playlist management
+	case key.Matches(msg, util.DefaultKeyMap.AddToPlaylist):
+		return m.handleAddToPlaylist()
+
+	case key.Matches(msg, util.DefaultKeyMap.RemoveFromPlaylist):
+		return m.handleRemoveFromPlaylist()
+
+	// Quit
+	case key.Matches(msg, util.DefaultKeyMap.Quit):
+		if m.viewMode.IsPlaylistView() {
+			m.viewMode = ViewLibrary
+			return m, nil
+		}
+		return m, tea.Quit
+
+	default:
+		// Forward unhandled keys to the active table
+		var cmd tea.Cmd
+		switch m.viewMode {
+		case ViewLibrary:
+			m.Table, cmd = m.Table.Update(msg)
+		case ViewPlaylists, ViewPlaylistTracks:
+			m.playlistList, cmd = m.playlistList.Update(msg)
+		}
+		return m, cmd
+	}
+}
+
+// toggleSearch toggles the search input field
+func (m *Model) toggleSearch() (tea.Model, tea.Cmd) {
+	if m.viewMode != ViewLibrary {
+		return m, nil
+	}
+
+	m.isSearching = !m.isSearching
+	if m.isSearching {
+		m.textInput.Focus()
+	} else {
+		m.textInput.Blur()
+	}
+	return m, nil
+}
+
+// toggleView switches between library and playlist views
+func (m *Model) toggleView() (tea.Model, tea.Cmd) {
+	switch m.viewMode {
+	case ViewLibrary:
+		m.viewMode = ViewPlaylists
+	case ViewPlaylists, ViewPlaylistTracks:
+		m.viewMode = ViewLibrary
+	}
+	return m, nil
+}
+
+// handleAddToPlaylist adds the selected song to the current playlist
+func (m *Model) handleAddToPlaylist() (tea.Model, tea.Cmd) {
+	if m.viewMode == ViewLibrary && len(m.Rows) > 0 {
+		selected := m.Table.Cursor()
+		if selected >= 0 && selected < len(m.Rows) {
+			m.addToPlaylist(selected)
+		}
+	}
+	return m, nil
+}
+
+// handleRemoveFromPlaylist removes the selected song from the current playlist
+func (m *Model) handleRemoveFromPlaylist() (tea.Model, tea.Cmd) {
+	if m.viewMode.IsPlaylistView() && len(m.playlistList.Rows()) > 0 {
+		selected := m.playlistList.Cursor()
+		m.removeFromPlaylist(selected)
+	}
+	return m, nil
+}
+
+// Update is the main update loop handling incoming messages.
+// It processes messages and updates the application state accordingly.
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle search input if search is active
+	if m.isSearching && m.viewMode == ViewLibrary {
+		return m.handleSearchInput(msg)
+	}
+
+	// Handle key presses
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		return m.handleKeyPress(keyMsg)
+	}
+
+	// Handle other message types
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		return m.handleWindowSize(msg)
+
+	case tickMsg:
+		return m.handleTick()
+
+	case progress.FrameMsg:
+		return m.handleProgressFrame(msg)
+
+	default:
+		return m, nil
+	}
+}
+
+// handleSearchInput processes input when in search mode
+func (m *Model) handleSearchInput(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyEnter, tea.KeyEscape:
+			m.isSearching = false
+			m.textInput.Blur()
+			return m, nil
+		}
+
+		// Update the search input
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+
+		// Update search results
+		query := m.textInput.Value()
+		if query == "" {
+			// If search is empty, show all rows with their original indices
+			m.Rows = m.AllRows
+			m.searchResultIndices = make([]int, len(m.AllRows))
+			for i := range m.AllRows {
+				m.searchResultIndices[i] = i
+			}
+		} else {
+			// Otherwise, get the search results with their original indices
+			m.Rows, m.searchResultIndices = m.searchIndex.Search(query)
+		}
+		m.Table.SetRows(m.Rows)
+		return m, cmd
+
+	default:
+		return m, nil
+	}
+}
+
+// addToPlaylist adds the currently selected song to the playlist
+func (m *Model) addToPlaylist(selected int) {
+	if selected < 0 || selected >= len(m.Rows) {
+		return // Index out of bounds
+	}
+
+	// Get the original index in case of search filtering
+	originalIdx := selected
+	if m.isSearching && len(m.searchResultIndices) > selected {
+		originalIdx = m.searchResultIndices[selected]
+	}
+
+	// Create a new row with an index at the beginning
+	currentRows := m.playlistList.Rows()
+	newRow := append([]string{fmt.Sprintf("%d", len(currentRows)+1)}, m.AllRows[originalIdx]...)
+
+	// Add the new row and update the table
+	m.playlistList.SetRows(append(currentRows, newRow))
+}
+
+// removeFromPlaylist removes the currently selected song from the playlist
+func (m *Model) removeFromPlaylist(selected int) {
+	// TODO: Remove the selected song from the playlist
+}
+
+// resize handles window resize events and updates the UI components accordingly
 func (m *Model) resize(width, height int) {
+	// Update dimensions
 	m.Width = width
 	m.Height = height
 
-	// Update table columns with new widths
-	available := width - 4 // Account for borders
-	if available < 40 {
-		available = 40
-	}
+	// Calculate content dimensions
+	contentHeight := m.calculateContentHeight()
+	contentWidth := m.calculateContentWidth()
 
-	// Fixed widths for duration column
-	durationWidth := 10
-	// Calculate remaining width for other columns
-	remainingWidth := available - durationWidth - 2 // -2 for the separators
-	// Distribute remaining width: 40% title, 40% artist, 20% album
-	titleWidth := remainingWidth * 40 / 100
-	artistWidth := remainingWidth * 40 / 100
-	albumWidth := remainingWidth * 20 / 100
+	// Update table layouts
+	m.updateTableLayouts(contentWidth, contentHeight)
 
-	m.Columns = []table.Column{
-		{Title: "Title", Width: titleWidth},
-		{Title: "Artist", Width: artistWidth},
-		{Title: "Album", Width: albumWidth},
-		{Title: "Duration", Width: durationWidth},
-	}
-
-	// Calculate available height for the content
-	headerHeight := 4 // Title + help + empty line
-	footerHeight := 4 // Progress bar + time + empty line + bottom padding
-
-	contentHeight := height - headerHeight - footerHeight - 2
-	if contentHeight < 3 {
-		contentHeight = 3
-	}
-
-	// Update table dimensions
-	m.Table.SetColumns(m.Columns)
-	m.Table.SetHeight(contentHeight)
-
-	m.playlistList.SetSize(available-4, contentHeight) // Subtract some padding
-
-	// Update progress bar width
-	m.ProgressWidth = width - 4
-	if m.ProgressWidth < 10 {
-		m.ProgressWidth = 10
-	}
+	// Update progress bar and input
+	m.ProgressWidth = width
 	m.Progress.Width = m.ProgressWidth
+	m.textInput.Width = width
+}
+
+// calculateContentHeight calculates the available height for content
+func (m *Model) calculateContentHeight() int {
+	// Total height minus status bar, progress bar, and padding
+	height := m.Height - 4 // Adjust based on your UI elements
+	if height < 3 {
+		return 3
+	}
+	return height
+}
+
+// calculateContentWidth calculates the available width for content
+func (m *Model) calculateContentWidth() int {
+	// Total width minus borders/padding
+	width := m.Width - 4
+	if width < 40 {
+		return 40
+	}
+	return width
+}
+
+// updateTableLayouts updates the layout of all tables
+func (m *Model) updateTableLayouts(width, height int) {
+	// Update main table
+	m.Table.SetColumns(ui.DefaultTableColumns(width))
+	m.Table.SetHeight(height)
+
+	// Update playlist table
+	m.playlistList.SetColumns(ui.DefaultPlaylistColumns(width))
+	m.playlistList.SetHeight(height)
 }
 
 // View renders the complete UI layout as a string.
 func (m *Model) View() string {
-	// Create a styled time display.
-	timeStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("240"))
-	timeText := fmt.Sprintf("%s / %s", formatDuration(m.PlayedTime), formatDuration(m.TotalTime))
-	timesView := timeStyle.Render(timeText)
+	// Compose the main UI components
+	searchView := m.renderSearch()
+	content := m.renderContent()
+	progressBar := m.renderProgressBar()
+	timeView := m.renderTimeDisplay()
+	statusBar := m.renderStatusBar()
 
-	// Show current view indicator
-	var viewIndicator string
-	switch m.viewMode {
-	case ViewLibrary:
-		viewIndicator = "Library"
-	case ViewPlaylists:
-		viewIndicator = "Playlists"
-	case ViewPlaylistTracks:
-		viewIndicator = "Tracks"
-	}
-
-	// Show search input or status
-	var searchView string
-	if m.isSearching && m.viewMode == ViewLibrary {
-		searchView = m.textInput.View()
-	} else if query := m.textInput.Value(); query != "" && m.viewMode == ViewLibrary {
-		searchView = fmt.Sprintf("Search: %s (Press / to search)", query)
-	} else if m.viewMode == ViewLibrary {
-		searchView = "Press / to search, Tab to switch view"
-	} else {
-		searchView = fmt.Sprintf("View: %s (Tab to switch)", viewIndicator)
-	}
-
-	// Compose the main content based on view mode
-	var content string
-	switch m.viewMode {
-	case ViewLibrary:
-		content = m.Table.View()
-	case ViewPlaylists, ViewPlaylistTracks:
-		// Add some styling to the playlist list
-		content = lipgloss.NewStyle().
-			Margin(1, 2).
-			Width(m.Width - 4).
-			MaxWidth(m.Width - 4).
-			Render(m.playlistList.View())
-	}
-
-	// Progress bar
-	progressBar := lipgloss.NewStyle().
-		Width(m.Width - 4).
-		Render(m.Progress.View())
-
-	// Build the UI
+	// Combine all components
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		searchView,
-		"\n"+content,
-		"\n"+progressBar,
-		timesView,
+		content,
+		progressBar,
+		timeView,
+		statusBar,
 	)
 }
 
+// renderSearch renders the search input if active
+func (m *Model) renderSearch() string {
+	if m.isSearching && m.viewMode == ViewLibrary {
+		return m.textInput.View()
+	}
+	return ""
+}
+
+// renderContent renders the main content area based on the current view mode
+func (m *Model) renderContent() string {
+	switch m.viewMode {
+	case ViewLibrary:
+		return m.Table.View()
+	case ViewPlaylists, ViewPlaylistTracks:
+		return m.renderPlaylistView()
+	default:
+		return ""
+	}
+}
+
+// renderPlaylistView renders the playlist or playlist tracks view
+func (m *Model) renderPlaylistView() string {
+	title := "Playlists"
+	if m.viewMode == ViewPlaylistTracks {
+		title = "Playlist Tracks"
+	}
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("62")).
+		MarginBottom(1)
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		titleStyle.Render(title),
+		m.playlistList.View(),
+	)
+}
+
+// renderProgressBar renders the playback progress bar
+func (m *Model) renderProgressBar() string {
+	return lipgloss.NewStyle().
+		Width(m.Width).
+		Render(m.Progress.View())
+}
+
+// renderTimeDisplay renders the current and total playback time
+func (m *Model) renderTimeDisplay() string {
+	timeStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("240")).
+		Width(m.Width)
+
+	timeText := fmt.Sprintf("%s / %s",
+		formatDuration(m.PlayedTime),
+		formatDuration(m.TotalTime))
+
+	return timeStyle.Render(timeText)
+}
+
+// renderStatusBar renders the status bar with view indicator and help text
+func (m *Model) renderStatusBar() string {
+	return lipgloss.NewStyle().
+		Width(m.Width).
+		Bold(true).
+		Foreground(lipgloss.Color("15")).
+		Background(lipgloss.Color("62")).
+		Render(fmt.Sprintf(" %s | Tab: Switch View | Q: Quit", m.viewMode))
+}
+
 func NewModel(rows []table.Row, paths []string) (*Model, error) {
-	columns := ui.DefaultTableColumns()
+	// Default width for initial table creation
+	defaultWidth := 80
+
+	// Initialize main table
+	columns := ui.DefaultTableColumns(defaultWidth)
 	t := ui.NewTable(columns, rows)
 	p := ui.NewProgressBar()
 
@@ -316,12 +501,14 @@ func NewModel(rows []table.Row, paths []string) (*Model, error) {
 	ti.CharLimit = 50
 	ti.Width = 50
 
-	playlistList := ui.NewPlaylist()
+	// Initialize playlist table with empty rows
+	playlistColumns := ui.DefaultPlaylistColumns(defaultWidth)
+	playlistTable := ui.NewPlaylist(playlistColumns, []table.Row{})
 
 	return &Model{
 		Table:               t,
 		textInput:           ti,
-		playlistList:        playlistList,
+		playlistList:        playlistTable,
 		Columns:             columns,
 		Rows:                rows,
 		AllRows:             rows,
@@ -350,10 +537,4 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 	}
 	return fmt.Sprintf("%02d:%02d", m, s)
-}
-
-func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second/10, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
 }

@@ -7,11 +7,11 @@ import (
 // KeyMap defines all key bindings for the application.
 type KeyMap struct {
 	// Navigation
-	Up           key.Binding
-	Down         key.Binding
-	Left         key.Binding
-	Right        key.Binding
-	Back         key.Binding
+	Up    key.Binding
+	Down  key.Binding
+	Left  key.Binding
+	Right key.Binding
+	Back  key.Binding
 
 	// Playback controls
 	Play         key.Binding
@@ -24,16 +24,17 @@ type KeyMap struct {
 	VolumeMute   key.Binding
 
 	// Application
-	Quit         key.Binding
+	Quit key.Binding
 
 	// Search and navigation
-	Search       key.Binding
-	ToggleView   key.Binding
+	Search     key.Binding
+	ToggleView key.Binding
 
 	// Playlist controls
-	CreatePlaylist key.Binding
-	AddToPlaylist key.Binding
-	DeleteItem    key.Binding
+	CreatePlaylist     key.Binding
+	AddToPlaylist      key.Binding
+	RemoveFromPlaylist key.Binding
+	DeleteItem         key.Binding
 }
 
 // DefaultKeyMap provides the default key bindings.
@@ -118,8 +119,12 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("n", "new playlist"),
 	),
 	AddToPlaylist: key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "add to playlist"),
+		key.WithKeys("a", "ctrl+a"),
+		key.WithHelp("a/ctrl+a", "add to playlist"),
+	),
+	RemoveFromPlaylist: key.NewBinding(
+		key.WithKeys("r", "ctrl+r"),
+		key.WithHelp("r/ctrl+r", "remove from playlist"),
 	),
 	DeleteItem: key.NewBinding(
 		key.WithKeys("d"),
@@ -130,11 +135,11 @@ var DefaultKeyMap = KeyMap{
 // FullHelp returns a slice of key bindings for the help view
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Left, k.Right},       // Navigation
-		{k.Play, k.Pause, k.Stop},             // Playback
-		{k.SkipBackward, k.SkipForward},        // Seeking
-		{k.VolumeUp, k.VolumeDown, k.VolumeMute}, // Volume
-		{k.ToggleView, k.Search},               // View controls
+		{k.Up, k.Down, k.Left, k.Right},                   // Navigation
+		{k.Play, k.Pause, k.Stop},                         // Playback
+		{k.SkipBackward, k.SkipForward},                   // Seeking
+		{k.VolumeUp, k.VolumeDown, k.VolumeMute},          // Volume
+		{k.ToggleView, k.Search},                          // View controls
 		{k.CreatePlaylist, k.AddToPlaylist, k.DeleteItem}, // Playlist controls
 		{k.Quit}, // Application
 	}
