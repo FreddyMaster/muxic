@@ -5,14 +5,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func DefaultPlaylistTableColumns(width int) []table.Column {
-	// Fixed column widths
-	durationWidth := 10 // Duration column width
-	indexWidth := 5     // Index column width
+func DefaultLibraryTableColumns(width int) []table.Column {
+	// Fixed widths for duration column
+	durationWidth := 10
 
 	// Calculate remaining width for other columns
-	// Subtract fixed widths and separators (2 chars)
-	remainingWidth := width - durationWidth - indexWidth - 2
+	remainingWidth := width - durationWidth - 2
 
 	// Distribute remaining width: 40% title, 40% artist, 20% album
 	titleWidth := remainingWidth * 40 / 100
@@ -20,7 +18,6 @@ func DefaultPlaylistTableColumns(width int) []table.Column {
 	albumWidth := remainingWidth * 20 / 100
 
 	return []table.Column{
-		{Title: "#", Width: indexWidth},
 		{Title: "Title", Width: titleWidth},
 		{Title: "Artist", Width: artistWidth},
 		{Title: "Album", Width: albumWidth},
@@ -28,18 +25,18 @@ func DefaultPlaylistTableColumns(width int) []table.Column {
 	}
 }
 
-func NewPlaylistTable(columns []table.Column, rows []table.Row) table.Model {
+func NewLibraryTable(columns []table.Column, rows []table.Row) table.Model {
 	// Create the table with initial settings.
 	t := table.New(
 		table.WithColumns(columns),
 		table.WithRows(rows),
 		table.WithFocused(true),
 	)
-	t.SetStyles(DefaultPlaylistTableStyles())
+	t.SetStyles(DefaultLibraryTableStyles())
 	return t
 }
 
-func DefaultPlaylistTableStyles() table.Styles {
+func DefaultLibraryTableStyles() table.Styles {
 	// Set default styles for the table.
 	s := table.DefaultStyles()
 	s.Header = s.Header.

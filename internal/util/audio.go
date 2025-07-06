@@ -7,14 +7,35 @@ import (
 	"github.com/gopxl/beep"
 	"github.com/gopxl/beep/effects"
 	"github.com/gopxl/beep/mp3"
+	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// openAudioFile opens an MP3 file and decodes it to return the audio streamer, format, and total samples.
+// AudioFile represents a single audio file with its metadata
+type AudioFile struct {
+	Title    string
+	Artist   string
+	Album    string
+	Duration string
+	Path     string
+	FileName string
+}
+
+// ToTableRow converts an AudioFile to a table.Row
+func (a *AudioFile) ToLibraryRow() table.Row {
+	return table.Row{a.Title, a.Artist, a.Album, a.Duration}
+}
+
+func (a *AudioFile) ToPlaylistRow(index int) table.Row {
+	return table.Row{strconv.Itoa(index + 1), a.Title, a.Artist, a.Album, a.Duration}
+}
+
+// OpenAudioFile opens an MP3 file and decodes it to return the audio streamer, format, and total samples.
 func OpenAudioFile(path string) (beep.StreamSeekCloser, beep.Format, int, error) {
 	// Open file.
 	f, err := os.Open(path)
@@ -67,10 +88,8 @@ var (
 	cacheMutex sync.RWMutex
 )
 
-// readAudioMetadata extracts metadata from the audio file at the specified path.
-// If metadata is missing, it provides default values.
-// The function caches the results for faster access, and the cache is cleared when the program exits.
-func readAudioMetadata(path, defaultName string) (string, string, string, string) {
+// ReadAudioMetadata extracts metadata from the audio file at the specified path.
+func ReadAudioMetadata(path, defaultName string) (string, string, string, string) {
 	// Check if the file is in the cache
 	cacheMutex.RLock()
 	if cached, exists := metadataCache[path]; exists {
@@ -79,14 +98,19 @@ func readAudioMetadata(path, defaultName string) (string, string, string, string
 	}
 	cacheMutex.RUnlock()
 
-	// Open file once for both metadata and duration
+	// Default values
+	title := defaultName
+	artist := "Unknown"
+	album := "Unknown"
+	duration := "0:00"
+
+	// Open file for reading
 	f, err := os.Open(path)
 	if err != nil {
 		return defaultName, "Unknown", "Unknown", "0:00"
 	}
-	defer f.Close()
 
-	// Get file info for modification time
+	// Get file info
 	fileInfo, err := f.Stat()
 	if err != nil {
 		return defaultName, "Unknown", "Unknown", "0:00"
@@ -94,29 +118,21 @@ func readAudioMetadata(path, defaultName string) (string, string, string, string
 
 	// Read metadata
 	meta, err := tag.ReadFrom(f)
-	if err != nil {
-		return defaultName, "Unknown", "Unknown", "0:00"
+	if err == nil {
+		if t := meta.Title(); t != "" {
+			title = t
+		}
+		if a := meta.Artist(); a != "" {
+			artist = a
+		}
+		if a := meta.Album(); a != "" {
+			album = a
+		}
 	}
 
-	// Get duration without reopening the file
-	if _, err := f.Seek(0, 0); err != nil {
-		return defaultName, "Unknown", "Unknown", "0:00"
-	}
-
-	duration := getFileDurationFromReader(f, fileInfo)
-
-	// Get metadata with fallbacks
-	title := defaultName
-	if t := meta.Title(); t != "" {
-		title = t
-	}
-	artist := "Unknown"
-	if a := meta.Artist(); a != "" {
-		artist = a
-	}
-	album := "Unknown"
-	if a := meta.Album(); a != "" {
-		album = a
+	// Get duration
+	if _, err := f.Seek(0, 0); err == nil {
+		duration = getFileDurationFromReader(f, fileInfo)
 	}
 
 	// Cache the results
@@ -135,10 +151,10 @@ func readAudioMetadata(path, defaultName string) (string, string, string, string
 }
 
 // getFileDurationFromReader reads the duration of an audio file from the provided file.
-// The file is read from the beginning, decoded, and then closed.
 // It returns the duration of the audio file as a string in the format "HH:MM:SS".
+// Note: The file should be opened and closed by the caller.
 func getFileDurationFromReader(f *os.File, fileInfo os.FileInfo) string {
-	// Seek to the beginning of the file
+	// Seek to the beginning of the file in case it was read before
 	if _, err := f.Seek(0, 0); err != nil {
 		return "0:00"
 	}
@@ -148,12 +164,12 @@ func getFileDurationFromReader(f *os.File, fileInfo os.FileInfo) string {
 	if err != nil {
 		return "0:00"
 	}
-	defer func(streamer beep.StreamSeekCloser) {
+	defer func() {
 		err := streamer.Close()
 		if err != nil {
-			fmt.Println("Error closing streamer:", err)
+			log.Println(err)
 		}
-	}(streamer)
+	}()
 
 	// Calculate the total samples
 	totalSamples := streamer.Len()
@@ -165,28 +181,24 @@ func getFileDurationFromReader(f *os.File, fileInfo os.FileInfo) string {
 	return formatDuration(duration)
 }
 
-// GetAudioRows scans the specified directory for audio files, retrieves their metadata,
-// and returns a slice of table rows and corresponding file paths.
-func GetAudioRows(dir string) ([]table.Row, []string, error) {
-	// Read directory entries.
+// GetAudioFiles scans the specified directory for audio files and returns a slice of AudioFile
+func GetAudioFiles(dir string) ([]*AudioFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, nil, err
+		return nil, fmt.Errorf("error reading directory: %w", err)
 	}
 
-	// Struct to hold the result of processing each file.
 	type result struct {
-		row   table.Row
-		path  string
+		file  *AudioFile
 		index int
+		err   error
 	}
 
 	var wg sync.WaitGroup
-	results := make(chan result, len(entries)) // Channel to collect results.
-	var rows []table.Row
-	var paths []string
+	results := make(chan result, len(entries))
+	var audioFiles []*AudioFile
 
-	// Process files in parallel.
+	// Process files in parallel
 	for i, entry := range entries {
 		if entry.IsDir() || !isAudioFile(entry.Name()) {
 			continue
@@ -196,50 +208,50 @@ func GetAudioRows(dir string) ([]table.Row, []string, error) {
 		go func(idx int, entry os.DirEntry) {
 			defer wg.Done()
 
-			// Construct file path and read metadata.
 			path := filepath.Join(dir, entry.Name())
-			title, artist, album, duration := readAudioMetadata(path, entry.Name())
+			title, artist, album, duration := ReadAudioMetadata(path, entry.Name())
 
-			// Send result to channel.
 			results <- result{
-				row:   table.Row{title, artist, album, duration},
-				path:  path,
+				file: &AudioFile{
+					Title:    title,
+					Artist:   artist,
+					Album:    album,
+					Duration: duration,
+					Path:     path,
+					FileName: entry.Name(),
+				},
 				index: idx,
 			}
 		}(i, entry)
 	}
 
-	// Close results channel when all workers are done.
+	// Close results channel when all workers are done
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// Collect results from channel.
-	tempRows := make([]table.Row, len(entries))
-	tempPaths := make([]string, len(entries))
-	count := 0
+	// Collect results
+	tempFiles := make([]*AudioFile, len(entries))
+	var count int
 
-	// Populate temporary slices with results.
 	for res := range results {
-		tempRows[res.index] = res.row
-		tempPaths[res.index] = res.path
+		if res.err != nil {
+			continue
+		}
+		tempFiles[res.index] = res.file
 		count++
 	}
 
-	// Initialize slices for non-empty entries.
-	rows = make([]table.Row, 0, count)
-	paths = make([]string, 0, count)
-
-	// Filter out empty entries.
-	for i := 0; i < len(tempRows); i++ {
-		if tempPaths[i] != "" {
-			rows = append(rows, tempRows[i])
-			paths = append(paths, tempPaths[i])
+	// Filter out nil entries
+	audioFiles = make([]*AudioFile, 0, count)
+	for _, file := range tempFiles {
+		if file != nil {
+			audioFiles = append(audioFiles, file)
 		}
 	}
 
-	return rows, paths, nil
+	return audioFiles, nil
 }
 
 // NewAudioCtrl creates a new beep.Ctrl for the given streamer.

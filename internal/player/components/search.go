@@ -1,44 +1,29 @@
-package util
+package components
 
 import (
 	"github.com/charmbracelet/bubbles/table"
 	"strings"
 )
 
+type Search struct {
+	IsSearching bool // Whether search is active
+}
+
 type SearchIndex struct {
 	rows  []table.Row
 	index map[string][]int // maps search terms to row indices
-}
-
-func NewSearchIndex(rows []table.Row) *SearchIndex {
-	index := make(map[string][]int)
-
-	for i, row := range rows {
-		// Create a set of all unique words in all columns
-		words := make(map[string]struct{})
-		for _, col := range row {
-			// Split into words and add to set
-			for _, word := range strings.Fields(strings.ToLower(col)) {
-				words[word] = struct{}{}
-			}
-		}
-
-		// Add row index to each word's entry
-		for word := range words {
-			index[word] = append(index[word], i)
-		}
-	}
-
-	return &SearchIndex{
-		rows:  rows,
-		index: index,
-	}
 }
 
 // SearchResult contains both the row and its original index
 type SearchResult struct {
 	Row   table.Row
 	Index int
+}
+
+func NewSearch() *Search {
+	return &Search{
+		IsSearching: false,
+	}
 }
 
 func (si *SearchIndex) Search(query string) ([]table.Row, []int) {

@@ -1,6 +1,7 @@
 package player
 
 import (
+	"fmt"
 	"muxic/internal/util"
 )
 
@@ -9,14 +10,33 @@ type MusicPlayer struct {
 }
 
 func NewMusicPlayer(dir string) (*MusicPlayer, error) {
-	rows, paths, err := util.GetAudioRows(dir)
+	// Get audio files from the directory
+	audioFiles, err := util.GetAudioFiles(dir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get audio files: %w", err)
 	}
-	model, err := NewModel(rows, paths)
+
+	// Get the library instance and add all audio files
+	library := util.GetLibrary()
+	for _, file := range audioFiles {
+		library.AddFile(file)
+	}
+
+	// Create the model
+	model, err := NewModel()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create model: %w", err)
 	}
+
+	// Refresh the library view
+	model.LibraryTable.SetRows(library.ToTableRows())
+
+	// Set the cursor to the first item if the library is not empty
+	if library.Count() > 0 {
+		model.ActiveFileIndex = 0
+		model.LibraryTable.SetCursor(0)
+	}
+
 	return &MusicPlayer{model: model}, nil
 }
 

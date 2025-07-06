@@ -1,9 +1,12 @@
-// Package player implements the main music player interface and logic.
-// It handles audio playback, playlist management, and user interactions.
 package player
 
 import (
 	"fmt"
+	"github.com/gopxl/beep"
+	"github.com/gopxl/beep/speaker"
+	"muxic/internal/player/components"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -12,9 +15,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/gopxl/beep"
-	"github.com/gopxl/beep/effects"
-
 	"muxic/internal/ui"
 	"muxic/internal/util"
 )
@@ -22,17 +22,13 @@ import (
 // ViewMode represents the different views in the application
 type ViewMode int
 
-// Application view modes
 const (
-	// ViewLibrary shows the music library
 	ViewLibrary ViewMode = iota
-	// ViewPlaylists shows the list of playlists
 	ViewPlaylists
-	// ViewPlaylistTracks shows tracks in the selected playlist
 	ViewPlaylistTracks
+	ViewQueue
 )
 
-// String returns a human-readable representation of the view mode
 func (v ViewMode) String() string {
 	switch v {
 	case ViewLibrary:
@@ -40,46 +36,54 @@ func (v ViewMode) String() string {
 	case ViewPlaylists:
 		return "Playlists"
 	case ViewPlaylistTracks:
-		return "Playlist Tracks"
+		return "Playlist"
+	case ViewQueue:
+		return "Queue"
 	default:
-		return "Unknown View"
+		return "Unknown"
 	}
 }
 
-// IsPlaylistView returns true if the current view is related to playlists
-func (v ViewMode) IsPlaylistView() bool {
-	return v == ViewPlaylists || v == ViewPlaylistTracks
+func (v ViewMode) Next() ViewMode {
+	return ViewMode((int(v) + 1) % 4)
 }
 
-// Model represents the main application state and UI components
+func (v ViewMode) Prev() ViewMode {
+	return ViewMode((int(v) + 3) % 4)
+}
+
+func (v ViewMode) IsPlaylistView() bool {
+	return v == ViewPlaylistTracks || v == ViewPlaylists
+}
+
 type Model struct {
 	// UI Components
-	Table        table.Model     // Main library table view
-	textInput    textinput.Model // Search input field
-	playlistList table.Model     // Playlist tracks table
-	Progress     progress.Model  // Playback progress bar
+	LibraryTable        table.Model     // Main library table view
+	SearchInput         textinput.Model // Search input field
+	PlaylistTable       []table.Model   // Playlist tracks table
+	QueueTable          table.Model     // Queue table
+	ActivePlaylistIndex int             // Index of the active playlist
+	Progress            progress.Model  // Playback progress bar
+
+	// Dump
 
 	// Library Data
-	Columns []table.Column // Table column definitions
-	Rows    []table.Row    // Currently visible rows (filtered)
-	AllRows []table.Row    // All available rows (unfiltered)
-	Paths   []string       // File paths for audio files
+	LibraryColumns []table.Column // Table column definitions
 
-	// Search State
-	searchIndex         *util.SearchIndex // Search index for library
-	searchResultIndices []int             // Original indices of search results
-	isSearching         bool              // Whether search is active
+	// Playlist Data
+	PlaylistManager *components.PlaylistManager
 
-	// Audio Playback State
-	CurrentStreamer beep.StreamSeekCloser // Current audio stream
-	Playing         bool                  // Whether audio is playing
-	TotalSamples    int                   // Total samples in current track
-	SampleRate      beep.SampleRate       // Audio sample rate
-	SamplesPlayed   int                   // Samples played so far
-	PlayedTime      time.Duration         // Formatted play time
-	TotalTime       time.Duration         // Total track duration
-	Ctrl            *beep.Ctrl            // Playback controller
-	Volume          *effects.Volume       // Volume controller
+	// Playback State
+	ActiveFileIndex int
+
+	// Search
+	Search *components.Search
+
+	// Audio Player
+	AudioPlayer *components.AudioPlayer
+
+	// Queue
+	Queue *components.Queue
 
 	// Application State
 	viewMode ViewMode // Current view
@@ -88,6 +92,9 @@ type Model struct {
 	Width         int // Window width
 	Height        int // Window height
 	ProgressWidth int // Width of progress bar
+
+	// Erorr
+	Error error
 }
 
 // tickMsg is sent on each tick of the progress updater
@@ -107,18 +114,18 @@ func (m *Model) Init() tea.Cmd {
 
 // handleTick updates the progress bar based on playback progress
 func (m *Model) handleTick() (tea.Model, tea.Cmd) {
-	if !m.Playing || m.TotalSamples <= 0 {
+	if !m.AudioPlayer.Playing || m.AudioPlayer.TotalSamples <= 0 {
 		return m, tickCmd()
 	}
 
-	percent := float64(m.SamplesPlayed) / float64(m.TotalSamples)
+	percent := float64(m.AudioPlayer.SamplesPlayed) / float64(m.AudioPlayer.TotalSamples)
 	if percent > 1.0 {
 		percent = 1.0
-		m.Playing = false
+		m.AudioPlayer.Playing = false
 	}
-
-	cmd := m.Progress.SetPercent(percent)
-	return m, tea.Batch(tickCmd(), cmd)
+	// Update progress bar
+	progressCmd := m.Progress.SetPercent(percent)
+	return m, tea.Batch(tickCmd(), progressCmd)
 }
 
 // handleWindowSize handles window resize events
@@ -128,7 +135,7 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	// Forward the window size to the active view
 	var cmd tea.Cmd
 	if m.viewMode.IsPlaylistView() {
-		m.playlistList, cmd = m.playlistList.Update(msg)
+		m.PlaylistTable[m.ActivePlaylistIndex], cmd = m.PlaylistTable[m.ActivePlaylistIndex].Update(msg)
 	}
 	return m, cmd
 }
@@ -147,15 +154,42 @@ func (m *Model) handleProgressFrame(msg progress.FrameMsg) (tea.Model, tea.Cmd) 
 
 // handleKeyPress processes keyboard input
 func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
+	// First, try to handle the key press with the active table
+	var cmd tea.Cmd
+	switch m.viewMode {
+	case ViewLibrary:
+		m.LibraryTable, cmd = m.LibraryTable.Update(msg)
+		m.ActiveFileIndex = m.LibraryTable.Cursor()
+		// If the table handled the key, return early
+		if cmd != nil {
+			return m, cmd
+		}
+	case ViewPlaylists, ViewPlaylistTracks:
+		m.PlaylistTable[m.ActivePlaylistIndex], cmd = m.PlaylistTable[m.ActivePlaylistIndex].Update(msg)
+		m.ActiveFileIndex = m.PlaylistTable[m.ActivePlaylistIndex].Cursor()
+		// If the table handled the key, return early
+		if cmd != nil {
+			return m, cmd
+		}
 
+	case ViewQueue:
+		m.QueueTable, cmd = m.QueueTable.Update(msg)
+		m.ActiveFileIndex = m.QueueTable.Cursor()
+		// If the table handled the key, return early
+		if cmd != nil {
+			return m, cmd
+		}
+	}
+
+	// If the table didn't handle the key, try application commands
+	switch {
 	// View switching
 	case key.Matches(msg, util.DefaultKeyMap.ToggleView):
 		return m.toggleView()
 
-	// Playback controls
+	// Playback controls - only handle these if we're not in a text input
 	case key.Matches(msg, util.DefaultKeyMap.Play):
-		return m, EnterCmd(m)
+		return m, PlayCmd(m)
 	case key.Matches(msg, util.DefaultKeyMap.Pause):
 		return m, PauseCmd(m)
 	case key.Matches(msg, util.DefaultKeyMap.Stop):
@@ -164,6 +198,8 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, SkipBackwardCmd(m)
 	case key.Matches(msg, util.DefaultKeyMap.SkipForward):
 		return m, SkipForwardCmd(m)
+
+	// Volume controls
 	case key.Matches(msg, util.DefaultKeyMap.VolumeUp):
 		return m, VolumeUpCmd(m)
 	case key.Matches(msg, util.DefaultKeyMap.VolumeDown):
@@ -171,16 +207,34 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, util.DefaultKeyMap.VolumeMute):
 		return m, VolumeMuteCmd(m)
 
+	// Track navigation
+	case key.Matches(msg, util.DefaultKeyMap.NextTrack):
+		return m, NextTrackCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.PreviousTrack):
+		return m, PreviousTrackCmd(m)
+
 	// Search
 	case key.Matches(msg, util.DefaultKeyMap.Search):
 		return m.toggleSearch()
 
 	// Playlist management
+	case key.Matches(msg, util.DefaultKeyMap.CreatePlaylist):
+		return m, CreatePlaylistCmd(m, "New Playlist")
 	case key.Matches(msg, util.DefaultKeyMap.AddToPlaylist):
-		return m.handleAddToPlaylist()
-
+		return m, AddToPlaylistCmd(m)
 	case key.Matches(msg, util.DefaultKeyMap.RemoveFromPlaylist):
-		return m.handleRemoveFromPlaylist()
+		return m, RemoveFromPlaylistCmd(m)
+
+	// Queue management
+	case key.Matches(msg, util.DefaultKeyMap.AddToQueue):
+		return m, AddToQueueCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.ViewQueue):
+		return m, ViewQueueCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.PlayNext):
+		return m, PlayNextInQueueCmd(m)
+	case key.Matches(msg, util.DefaultKeyMap.ClearQueue):
+		m.Queue.Clear()
+		return m, tea.Printf("Queue cleared")
 
 	// Quit
 	case key.Matches(msg, util.DefaultKeyMap.Quit):
@@ -190,16 +244,9 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 
+	// If we get here, the key wasn't handled by the application
 	default:
-		// Forward unhandled keys to the active table
-		var cmd tea.Cmd
-		switch m.viewMode {
-		case ViewLibrary:
-			m.Table, cmd = m.Table.Update(msg)
-		case ViewPlaylists, ViewPlaylistTracks:
-			m.playlistList, cmd = m.playlistList.Update(msg)
-		}
-		return m, cmd
+		return m, nil
 	}
 }
 
@@ -209,11 +256,11 @@ func (m *Model) toggleSearch() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.isSearching = !m.isSearching
-	if m.isSearching {
-		m.textInput.Focus()
+	m.Search.IsSearching = !m.Search.IsSearching
+	if m.Search.IsSearching {
+		m.SearchInput.Focus()
 	} else {
-		m.textInput.Blur()
+		m.SearchInput.Blur()
 	}
 	return m, nil
 }
@@ -222,54 +269,76 @@ func (m *Model) toggleSearch() (tea.Model, tea.Cmd) {
 func (m *Model) toggleView() (tea.Model, tea.Cmd) {
 	switch m.viewMode {
 	case ViewLibrary:
-		m.viewMode = ViewPlaylists
-	case ViewPlaylists, ViewPlaylistTracks:
-		m.viewMode = ViewLibrary
-	}
-	return m, nil
-}
+		// When switching to playlists view, ensure the playlist table is up to date
+		if m.PlaylistManager != nil && len(m.PlaylistManager.Playlists) > 0 {
+			// Update the active playlist index if needed
+			if m.ActivePlaylistIndex >= len(m.PlaylistManager.Playlists) {
+				m.ActivePlaylistIndex = 0
+			}
 
-// handleAddToPlaylist adds the selected song to the current playlist
-func (m *Model) handleAddToPlaylist() (tea.Model, tea.Cmd) {
-	if m.viewMode == ViewLibrary && len(m.Rows) > 0 {
-		selected := m.Table.Cursor()
-		if selected >= 0 && selected < len(m.Rows) {
-			m.addToPlaylist(selected)
+			// Get the current active playlist
+			playlist := m.PlaylistManager.Playlists[m.ActivePlaylistIndex]
+
+			// Convert tracks to table rows
+			var rows []table.Row
+			for i, t := range playlist.Tracks {
+				rows = append(rows, table.Row{
+					strconv.Itoa(i + 1),
+					t.Title,
+					t.Artist,
+					t.Album,
+					t.Duration,
+				})
+			}
+
+			// Update the playlist table
+			if m.ActivePlaylistIndex < len(m.PlaylistTable) {
+				m.PlaylistTable[m.ActivePlaylistIndex].SetRows(rows)
+			}
 		}
-	}
-	return m, nil
-}
 
-// handleRemoveFromPlaylist removes the selected song from the current playlist
-func (m *Model) handleRemoveFromPlaylist() (tea.Model, tea.Cmd) {
-	if m.viewMode.IsPlaylistView() && len(m.playlistList.Rows()) > 0 {
-		selected := m.playlistList.Cursor()
-		m.removeFromPlaylist(selected)
+		m.viewMode = ViewPlaylists
+		return m, nil
+
+	case ViewPlaylists:
+		m.viewMode = ViewQueue
+		return m, nil
+
+	case ViewQueue:
+		m.viewMode = ViewLibrary
+		return m, nil
+
+	default:
+		m.viewMode = ViewLibrary
+		return m, nil
 	}
-	return m, nil
 }
 
 // Update is the main update loop handling incoming messages.
 // It processes messages and updates the application state accordingly.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Clear error on any message except tick messages
+	if _, isTick := msg.(tickMsg); !isTick {
+		m.Error = nil
+	}
+
 	// Handle search input if search is active
-	if m.isSearching && m.viewMode == ViewLibrary {
+	if m.Search.IsSearching && m.viewMode == ViewLibrary {
 		return m.handleSearchInput(msg)
 	}
 
-	// Handle key presses
-	if keyMsg, ok := msg.(tea.KeyMsg); ok {
-		return m.handleKeyPress(keyMsg)
+	// Check if current track finished playing
+	if m.AudioPlayer != nil &&
+		m.AudioPlayer.Playing &&
+		m.AudioPlayer.GetProgress() >= 0.99 { // 99% played
+		return m, PlayNextInQueueCmd(m)
 	}
 
-	// Handle other message types
 	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		return m.handleKeyPress(msg)
 	case tea.WindowSizeMsg:
 		return m.handleWindowSize(msg)
-
-	case tickMsg:
-		return m.handleTick()
-
 	case progress.FrameMsg:
 		return m.handleProgressFrame(msg)
 
@@ -284,59 +353,39 @@ func (m *Model) handleSearchInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyEnter, tea.KeyEscape:
-			m.isSearching = false
-			m.textInput.Blur()
+			m.Search.IsSearching = false
+			m.SearchInput.Blur()
 			return m, nil
 		}
 
 		// Update the search input
 		var cmd tea.Cmd
-		m.textInput, cmd = m.textInput.Update(msg)
+		m.SearchInput, cmd = m.SearchInput.Update(msg)
 
 		// Update search results
-		query := m.textInput.Value()
+		query := m.SearchInput.Value()
+		library := util.GetLibrary()
+
 		if query == "" {
-			// If search is empty, show all rows with their original indices
-			m.Rows = m.AllRows
-			m.searchResultIndices = make([]int, len(m.AllRows))
-			for i := range m.AllRows {
-				m.searchResultIndices[i] = i
-			}
+			// If search is empty, show all rows
+			m.LibraryTable.SetRows(library.ToTableRows())
 		} else {
-			// Otherwise, get the search results with their original indices
-			m.Rows, m.searchResultIndices = m.searchIndex.Search(query)
+			// Otherwise, filter the library based on the query
+			var filteredRows []table.Row
+			for _, file := range library.Files {
+				// Simple case-insensitive search in title and artist
+				if strings.Contains(strings.ToLower(file.Title), strings.ToLower(query)) ||
+					strings.Contains(strings.ToLower(file.Artist), strings.ToLower(query)) {
+					filteredRows = append(filteredRows, file.ToLibraryRow())
+				}
+			}
+			m.LibraryTable.SetRows(filteredRows)
 		}
-		m.Table.SetRows(m.Rows)
 		return m, cmd
 
 	default:
 		return m, nil
 	}
-}
-
-// addToPlaylist adds the currently selected song to the playlist
-func (m *Model) addToPlaylist(selected int) {
-	if selected < 0 || selected >= len(m.Rows) {
-		return // Index out of bounds
-	}
-
-	// Get the original index in case of search filtering
-	originalIdx := selected
-	if m.isSearching && len(m.searchResultIndices) > selected {
-		originalIdx = m.searchResultIndices[selected]
-	}
-
-	// Create a new row with an index at the beginning
-	currentRows := m.playlistList.Rows()
-	newRow := append([]string{fmt.Sprintf("%d", len(currentRows)+1)}, m.AllRows[originalIdx]...)
-
-	// Add the new row and update the table
-	m.playlistList.SetRows(append(currentRows, newRow))
-}
-
-// removeFromPlaylist removes the currently selected song from the playlist
-func (m *Model) removeFromPlaylist(selected int) {
-	// TODO: Remove the selected song from the playlist
 }
 
 // resize handles window resize events and updates the UI components accordingly
@@ -355,13 +404,13 @@ func (m *Model) resize(width, height int) {
 	// Update progress bar and input
 	m.ProgressWidth = width
 	m.Progress.Width = m.ProgressWidth
-	m.textInput.Width = width
+	m.SearchInput.Width = width
 }
 
 // calculateContentHeight calculates the available height for content
 func (m *Model) calculateContentHeight() int {
 	// Total height minus status bar, progress bar, and padding
-	height := m.Height - 4 // Adjust based on your UI elements
+	height := m.Height - 6 // Adjust based on your UI elements
 	if height < 3 {
 		return 3
 	}
@@ -381,38 +430,83 @@ func (m *Model) calculateContentWidth() int {
 // updateTableLayouts updates the layout of all tables
 func (m *Model) updateTableLayouts(width, height int) {
 	// Update main table
-	m.Table.SetColumns(ui.DefaultTableColumns(width))
-	m.Table.SetHeight(height)
+	m.LibraryTable.SetColumns(ui.DefaultLibraryTableColumns(width))
+	m.LibraryTable.SetHeight(height)
 
 	// Update playlist table
-	m.playlistList.SetColumns(ui.DefaultPlaylistColumns(width))
-	m.playlistList.SetHeight(height)
+	m.PlaylistTable[m.ActivePlaylistIndex].SetColumns(ui.DefaultPlaylistTableColumns(width))
+	m.PlaylistTable[m.ActivePlaylistIndex].SetHeight(height)
+
+	// Update queue table
+	m.QueueTable.SetColumns(ui.DefaultQueueTableColumns(width))
+	m.QueueTable.SetHeight(height)
+}
+
+// clearErrorMsg is a message to clear the current error
+type clearErrorMsg struct{}
+
+// ErrorView renders the error message if there is one
+func (m *Model) ErrorView() string {
+	if m.Error == nil {
+		return ""
+	}
+
+	errorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF0000")).
+		Bold(true).
+		Padding(0, 1).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#FF0000")).
+		MarginBottom(1)
+
+	return errorStyle.Render("Error: " + m.Error.Error())
 }
 
 // View renders the complete UI layout as a string.
 func (m *Model) View() string {
-	// Compose the main UI components
-	searchView := m.renderSearch()
-	content := m.renderContent()
-	progressBar := m.renderProgressBar()
-	timeView := m.renderTimeDisplay()
-	statusBar := m.renderStatusBar()
+	var views []string
 
-	// Combine all components
+	// Add error view if there's an error
+	if errorView := m.ErrorView(); errorView != "" {
+		views = append(views, errorView)
+	}
+
+	// Add search view
+	views = append(views, m.renderSearch())
+
+	// Add main content
+	content := m.renderContent()
+	if content != "" {
+		views = append(views, content)
+	}
+
+	// Add progress and status bars
+	progressBar := m.renderProgressBar()
+	if progressBar != "" {
+		views = append(views, progressBar)
+	}
+
+	timeView := m.renderTimeDisplay()
+	if timeView != "" {
+		views = append(views, timeView)
+	}
+
+	statusBar := m.renderStatusBar()
+	if statusBar != "" {
+		views = append(views, statusBar)
+	}
+
+	// Combine all non-empty components
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		searchView,
-		content,
-		progressBar,
-		timeView,
-		statusBar,
+		views...,
 	)
 }
 
 // renderSearch renders the search input if active
 func (m *Model) renderSearch() string {
-	if m.isSearching && m.viewMode == ViewLibrary {
-		return m.textInput.View()
+	if m.Search != nil && m.viewMode == ViewLibrary {
+		return m.SearchInput.View()
 	}
 	return ""
 }
@@ -421,8 +515,8 @@ func (m *Model) renderSearch() string {
 func (m *Model) renderContent() string {
 	switch m.viewMode {
 	case ViewLibrary:
-		return m.Table.View()
-	case ViewPlaylists, ViewPlaylistTracks:
+		return m.LibraryTable.View()
+	case ViewPlaylists:
 		return m.renderPlaylistView()
 	default:
 		return ""
@@ -444,7 +538,7 @@ func (m *Model) renderPlaylistView() string {
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		titleStyle.Render(title),
-		m.playlistList.View(),
+		m.PlaylistTable[m.ActivePlaylistIndex].View(),
 	)
 }
 
@@ -452,6 +546,7 @@ func (m *Model) renderPlaylistView() string {
 func (m *Model) renderProgressBar() string {
 	return lipgloss.NewStyle().
 		Width(m.Width).
+		MarginTop(1).
 		Render(m.Progress.View())
 }
 
@@ -463,10 +558,35 @@ func (m *Model) renderTimeDisplay() string {
 		Width(m.Width)
 
 	timeText := fmt.Sprintf("%s / %s",
-		formatDuration(m.PlayedTime),
-		formatDuration(m.TotalTime))
+		formatDuration(m.AudioPlayer.PlayedTime),
+		formatDuration(m.AudioPlayer.TotalTime))
 
 	return timeStyle.Render(timeText)
+}
+
+// GetCurrentFilePath returns the path of the currently selected file
+func (m *Model) GetCurrentFilePath() string {
+	switch m.viewMode {
+	case ViewLibrary:
+		library := util.GetLibrary()
+		if m.ActiveFileIndex < 0 || m.ActiveFileIndex >= library.Count() {
+			return ""
+		}
+		file, err := library.GetFile(m.ActiveFileIndex)
+		if err != nil {
+			return ""
+		}
+		return file.Path
+
+	case ViewPlaylistTracks, ViewPlaylists:
+		if m.PlaylistManager == nil || m.ActiveFileIndex < 0 || m.ActiveFileIndex >= len(m.PlaylistManager.ActivePlaylist.Tracks) {
+			return ""
+		}
+		return m.PlaylistManager.ActivePlaylist.Tracks[m.ActiveFileIndex].Path
+
+	default:
+		return ""
+	}
 }
 
 // renderStatusBar renders the status bar with view indicator and help text
@@ -474,57 +594,72 @@ func (m *Model) renderStatusBar() string {
 	return lipgloss.NewStyle().
 		Width(m.Width).
 		Bold(true).
+		MarginTop(1).
 		Foreground(lipgloss.Color("15")).
 		Background(lipgloss.Color("62")).
 		Render(fmt.Sprintf(" %s | Tab: Switch View | Q: Quit", m.viewMode))
 }
 
-func NewModel(rows []table.Row, paths []string) (*Model, error) {
+func NewModel() (*Model, error) {
 	// Default width for initial table creation
 	defaultWidth := 80
 
-	// Initialize main table
-	columns := ui.DefaultTableColumns(defaultWidth)
-	t := ui.NewTable(columns, rows)
-	p := ui.NewProgressBar()
-
-	// Initialize search indices to match initial rows
-	indices := make([]int, len(rows))
-	for i := range rows {
-		indices[i] = i
+	// Initialize the audio player
+	sr := beep.SampleRate(44100)
+	if err := speaker.Init(sr, sr.N(time.Second/10)); err != nil {
+		return nil, err
 	}
 
+	// Initialize the Playlist
+	playlistManager := components.NewPlaylistManager()
+
+	// Get the library instance
+	library := util.GetLibrary()
+
+	// Initialize main table with library data
+	libraryColumns := ui.DefaultLibraryTableColumns(defaultWidth)
+	libraryTable := ui.NewLibraryTable(libraryColumns, library.ToTableRows())
+
+	// Initialize progress bar
+	progressBar := ui.NewProgressBar()
+
 	// Initialize the text input
-	ti := textinput.New()
-	ti.Placeholder = "Search..."
-	ti.Prompt = "> "
-	ti.CharLimit = 50
-	ti.Width = 50
+	searchInput := ui.NewSearch()
 
 	// Initialize playlist table with empty rows
-	playlistColumns := ui.DefaultPlaylistColumns(defaultWidth)
-	playlistTable := ui.NewPlaylist(playlistColumns, []table.Row{})
+	playlistRows := make([]table.Row, 0)
+	playlistColumns := ui.DefaultPlaylistTableColumns(defaultWidth)
+	playlistTable := ui.NewPlaylistTable(playlistColumns, playlistRows)
+	playlists := []table.Model{playlistTable}
+
+	// Initialize the queue table
+	queueRows := make([]table.Row, 0)
+	queueColumns := ui.DefaultQueueTableColumns(defaultWidth)
+	queueTable := ui.NewQueueTable(queueColumns, queueRows)
 
 	return &Model{
-		Table:               t,
-		textInput:           ti,
-		playlistList:        playlistTable,
-		Columns:             columns,
-		Rows:                rows,
-		AllRows:             rows,
-		Paths:               paths,
-		searchResultIndices: indices,
-		Progress:            p,
-		searchIndex:         util.NewSearchIndex(rows),
+		LibraryTable:        libraryTable,
+		SearchInput:         searchInput,
+		PlaylistTable:       playlists,
+		QueueTable:          queueTable,
+		LibraryColumns:      libraryColumns,
+		ActivePlaylistIndex: 0,  // Default to the first playlist
+		ActiveFileIndex:     -1, // Initialize to -1 to indicate no selection
+		PlaylistManager:     playlistManager,
+		Progress:            progressBar,
 		viewMode:            ViewLibrary,
 		Width:               80, // default, will be set by WindowSizeMsg
 		Height:              24, // default, will be set by WindowSizeMsg
+		AudioPlayer:         components.NewAudioPlayer(),
+		Queue:               components.NewQueue(),
+		Search:              components.NewSearch(),
 	}, nil
 }
 
 // Run starts the Bubble Tea program.
 func (m *Model) Run() error {
-	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
 	return err
 }
 
