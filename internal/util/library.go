@@ -76,7 +76,7 @@ func (l *Library) GetPaths() []string {
 }
 
 // Count returns the number of files in the library
-func (l *Library) Count() int {
+func (l *Library) Length() int {
 	return len(l.Files)
 }
 

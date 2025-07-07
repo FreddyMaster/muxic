@@ -3,9 +3,11 @@ package components
 import (
 	"errors"
 	"fmt"
+	"github.com/charmbracelet/bubbles/table"
 	"math/rand"
 	"muxic/internal/util"
 	"sort"
+	"strconv"
 )
 
 // Playlist represents a collection of audio tracks
@@ -214,6 +216,21 @@ func (pm *PlaylistManager) SortPlaylist(playlistID int, by string, ascending boo
 	return nil
 }
 
-func (pm *PlaylistManager) Count() []*Playlist {
-	return pm.Playlists
+func (pm *PlaylistManager) Length() int {
+	return len(pm.ActivePlaylist.Tracks)
+}
+
+func (pm *PlaylistManager) ToTableRows(playlistID int) []table.Row {
+	playlist, _ := pm.GetPlaylist(playlistID)
+	rows := make([]table.Row, len(playlist.Tracks))
+	for i, t := range playlist.Tracks {
+		rows[i] = table.Row{
+			strconv.Itoa(i + 1),
+			t.Title,
+			t.Artist,
+			t.Album,
+			t.Duration,
+		}
+	}
+	return rows
 }

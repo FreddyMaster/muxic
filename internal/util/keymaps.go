@@ -40,10 +40,11 @@ type KeyMap struct {
 	RemoveFromPlaylist key.Binding
 
 	// Queue controls
-	AddToQueue key.Binding
-	ViewQueue  key.Binding
-	PlayNext   key.Binding
-	ClearQueue key.Binding
+	AddToQueue      key.Binding
+	RemoveFromQueue key.Binding
+	ViewQueue       key.Binding
+	PlayNext        key.Binding
+	ClearQueue      key.Binding
 }
 
 // DefaultKeyMap provides the default key bindings.
@@ -136,8 +137,8 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("ctrl+n", "new playlist"),
 	),
 	AddToPlaylist: key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "add to playlist"),
+		key.WithKeys("ctrl+a"),
+		key.WithHelp("ctrl+a", "add to playlist"),
 	),
 	RemoveFromPlaylist: key.NewBinding(
 		key.WithKeys("d"),
@@ -146,8 +147,12 @@ var DefaultKeyMap = KeyMap{
 
 	// Queue controls
 	AddToQueue: key.NewBinding(
-		key.WithKeys("q"),
-		key.WithHelp("q", "add to queue"),
+		key.WithKeys("a"),
+		key.WithHelp("a", "add to queue"),
+	),
+	RemoveFromQueue: key.NewBinding(
+		key.WithKeys("d"),
+		key.WithHelp("d", "remove from queue"),
 	),
 	ViewQueue: key.NewBinding(
 		key.WithKeys("v"),

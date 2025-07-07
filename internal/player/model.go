@@ -5,7 +5,6 @@ import (
 	"github.com/gopxl/beep"
 	"github.com/gopxl/beep/speaker"
 	"muxic/internal/player/components"
-	"strconv"
 	"strings"
 	"time"
 
@@ -93,7 +92,7 @@ type Model struct {
 	Height        int // Window height
 	ProgressWidth int // Width of progress bar
 
-	// Erorr
+	// Errors
 	Error error
 }
 
@@ -126,6 +125,29 @@ func (m *Model) handleTick() (tea.Model, tea.Cmd) {
 	// Update progress bar
 	progressCmd := m.Progress.SetPercent(percent)
 	return m, tea.Batch(tickCmd(), progressCmd)
+}
+
+// UpdatePlaylistTable updates the playlist table with the current playlist tracks
+func (m *Model) UpdatePlaylistTable() {
+	if m.PlaylistManager == nil || m.PlaylistManager.ActivePlaylist == nil {
+		return
+	}
+
+	rows := m.PlaylistManager.ToTableRows(m.PlaylistManager.ActivePlaylist.ID)
+	if m.ActivePlaylistIndex >= 0 && m.ActivePlaylistIndex < len(m.PlaylistTable) {
+		tbl := &m.PlaylistTable[m.ActivePlaylistIndex]
+		tbl.SetRows(rows)
+		tbl.UpdateViewport()
+	}
+}
+
+func (m *Model) UpdateQueueTable() {
+	if m.Queue == nil {
+		return
+	}
+	rows := m.Queue.ToTableRows()
+	m.QueueTable.SetRows(rows)
+	m.QueueTable.UpdateViewport()
 }
 
 // handleWindowSize handles window resize events
@@ -238,10 +260,6 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Quit
 	case key.Matches(msg, util.DefaultKeyMap.Quit):
-		if m.viewMode.IsPlaylistView() {
-			m.viewMode = ViewLibrary
-			return m, nil
-		}
 		return m, tea.Quit
 
 	// If we get here, the key wasn't handled by the application
@@ -269,34 +287,6 @@ func (m *Model) toggleSearch() (tea.Model, tea.Cmd) {
 func (m *Model) toggleView() (tea.Model, tea.Cmd) {
 	switch m.viewMode {
 	case ViewLibrary:
-		// When switching to playlists view, ensure the playlist table is up to date
-		if m.PlaylistManager != nil && len(m.PlaylistManager.Playlists) > 0 {
-			// Update the active playlist index if needed
-			if m.ActivePlaylistIndex >= len(m.PlaylistManager.Playlists) {
-				m.ActivePlaylistIndex = 0
-			}
-
-			// Get the current active playlist
-			playlist := m.PlaylistManager.Playlists[m.ActivePlaylistIndex]
-
-			// Convert tracks to table rows
-			var rows []table.Row
-			for i, t := range playlist.Tracks {
-				rows = append(rows, table.Row{
-					strconv.Itoa(i + 1),
-					t.Title,
-					t.Artist,
-					t.Album,
-					t.Duration,
-				})
-			}
-
-			// Update the playlist table
-			if m.ActivePlaylistIndex < len(m.PlaylistTable) {
-				m.PlaylistTable[m.ActivePlaylistIndex].SetRows(rows)
-			}
-		}
-
 		m.viewMode = ViewPlaylists
 		return m, nil
 
@@ -518,6 +508,8 @@ func (m *Model) renderContent() string {
 		return m.LibraryTable.View()
 	case ViewPlaylists:
 		return m.renderPlaylistView()
+	case ViewQueue:
+		return m.renderQueueView()
 	default:
 		return ""
 	}
@@ -539,6 +531,21 @@ func (m *Model) renderPlaylistView() string {
 		lipgloss.Left,
 		titleStyle.Render(title),
 		m.PlaylistTable[m.ActivePlaylistIndex].View(),
+	)
+}
+
+func (m *Model) renderQueueView() string {
+	title := "Queue"
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("62")).
+		MarginBottom(1)
+
+	return lipgloss.JoinVertical(
+		lipgloss.Left,
+		titleStyle.Render(title),
+		m.QueueTable.View(),
 	)
 }
 
@@ -569,7 +576,7 @@ func (m *Model) GetCurrentFilePath() string {
 	switch m.viewMode {
 	case ViewLibrary:
 		library := util.GetLibrary()
-		if m.ActiveFileIndex < 0 || m.ActiveFileIndex >= library.Count() {
+		if m.ActiveFileIndex < 0 || m.ActiveFileIndex >= library.Length() {
 			return ""
 		}
 		file, err := library.GetFile(m.ActiveFileIndex)
@@ -579,10 +586,16 @@ func (m *Model) GetCurrentFilePath() string {
 		return file.Path
 
 	case ViewPlaylistTracks, ViewPlaylists:
-		if m.PlaylistManager == nil || m.ActiveFileIndex < 0 || m.ActiveFileIndex >= len(m.PlaylistManager.ActivePlaylist.Tracks) {
+		if m.PlaylistManager == nil || m.ActiveFileIndex < 0 || m.ActiveFileIndex >= m.PlaylistManager.Length() {
 			return ""
 		}
 		return m.PlaylistManager.ActivePlaylist.Tracks[m.ActiveFileIndex].Path
+
+	case ViewQueue:
+		if m.ActiveFileIndex < 0 || m.ActiveFileIndex >= m.Queue.Length() {
+			return ""
+		}
+		return m.Queue.Tracks[m.ActiveFileIndex].Path
 
 	default:
 		return ""

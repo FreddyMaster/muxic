@@ -1,12 +1,14 @@
 package components
 
 import (
+	"github.com/charmbracelet/bubbles/table"
 	"math/rand/v2"
 	"muxic/internal/util"
+	"strconv"
 )
 
 type Queue struct {
-	Tracks       []util.AudioFile
+	Tracks       []*util.AudioFile
 	CurrentIndex int
 }
 
@@ -14,7 +16,7 @@ func NewQueue() *Queue {
 	return &Queue{}
 }
 
-func (q *Queue) Add(track util.AudioFile) {
+func (q *Queue) Add(track *util.AudioFile) {
 	q.Tracks = append(q.Tracks, track)
 }
 
@@ -42,7 +44,7 @@ func (q *Queue) Shuffle() {
 	})
 }
 
-func (q *Queue) Current() util.AudioFile {
+func (q *Queue) Current() *util.AudioFile {
 	return q.Tracks[q.CurrentIndex]
 }
 
@@ -52,4 +54,18 @@ func (q *Queue) Clear() {
 
 func (q *Queue) Length() int {
 	return len(q.Tracks)
+}
+
+func (q *Queue) ToTableRows() []table.Row {
+	rows := make([]table.Row, len(q.Tracks))
+	for i, t := range q.Tracks {
+		rows[i] = table.Row{
+			strconv.Itoa(i + 1),
+			t.Title,
+			t.Artist,
+			t.Album,
+			t.Duration,
+		}
+	}
+	return rows
 }

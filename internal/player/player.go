@@ -32,7 +32,7 @@ func NewMusicPlayer(dir string) (*MusicPlayer, error) {
 	model.LibraryTable.SetRows(library.ToTableRows())
 
 	// Set the cursor to the first item if the library is not empty
-	if library.Count() > 0 {
+	if library.Length() > 0 {
 		model.ActiveFileIndex = 0
 		model.LibraryTable.SetCursor(0)
 	}
