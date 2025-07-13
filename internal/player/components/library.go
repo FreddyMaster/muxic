@@ -1,8 +1,9 @@
-package util
+package components
 
 import (
 	"fmt"
 	"github.com/charmbracelet/bubbles/table"
+	"muxic/internal/util"
 	"sync"
 )
 
@@ -14,7 +15,7 @@ var (
 
 type Library struct {
 	Name  string
-	Files []*AudioFile
+	Files []*util.AudioFile
 }
 
 // GetLibrary returns the singleton instance of the library
@@ -22,14 +23,14 @@ func GetLibrary() *Library {
 	once.Do(func() {
 		libraryInstance = &Library{
 			Name:  "Music Library",
-			Files: make([]*AudioFile, 0),
+			Files: make([]*util.AudioFile, 0),
 		}
 	})
 	return libraryInstance
 }
 
 // AddFile adds a file to the library if it doesn't already exist
-func (l *Library) AddFile(file *AudioFile) bool {
+func (l *Library) AddFile(file *util.AudioFile) bool {
 	// Check if file already exists in library
 	for _, f := range l.Files {
 		if f.Path == file.Path {
@@ -41,7 +42,7 @@ func (l *Library) AddFile(file *AudioFile) bool {
 }
 
 // GetFile returns a file by index
-func (l *Library) GetFile(index int) (*AudioFile, error) {
+func (l *Library) GetFile(index int) (*util.AudioFile, error) {
 	if index < 0 || index >= len(l.Files) {
 		return nil, fmt.Errorf("index out of range")
 	}
@@ -59,9 +60,15 @@ func (l *Library) RemoveFile(index int) error {
 
 // ToTableRows converts all files in the library to table rows
 func (l *Library) ToTableRows() []table.Row {
-	rows := make([]table.Row, len(l.Files))
-	for i, file := range l.Files {
-		rows[i] = file.ToLibraryRow()
+	library := GetLibrary()
+	rows := make([]table.Row, library.Length())
+	for i, t := range library.Files {
+		rows[i] = table.Row{
+			t.Title,
+			t.Artist,
+			t.Album,
+			t.Duration,
+		}
 	}
 	return rows
 }
@@ -75,12 +82,12 @@ func (l *Library) GetPaths() []string {
 	return paths
 }
 
-// Count returns the number of files in the library
+// Length returns the number of files in the library
 func (l *Library) Length() int {
 	return len(l.Files)
 }
 
 // Clear removes all files from the library
 func (l *Library) Clear() {
-	l.Files = make([]*AudioFile, 0)
+	l.Files = make([]*util.AudioFile, 0)
 }

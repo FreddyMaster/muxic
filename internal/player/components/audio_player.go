@@ -4,6 +4,8 @@ import (
 	"errors"
 	"github.com/gopxl/beep"
 	"github.com/gopxl/beep/effects"
+	"github.com/gopxl/beep/speaker"
+	"muxic/internal/util"
 	"time"
 )
 
@@ -11,6 +13,7 @@ import (
 type AudioPlayer struct {
 	CurrentStreamer beep.StreamSeekCloser // Current audio stream
 	Playing         bool                  // Whether audio is playing
+	Looping         bool                  // Whether audio is looping
 	SamplesPlayed   int                   // Samples played so far
 	TotalSamples    int                   // Total samples in current track
 	SampleRate      beep.SampleRate       // Audio sample rate
@@ -35,11 +38,62 @@ func NewAudioPlayer() *AudioPlayer {
 	}
 }
 
-func (a *AudioPlayer) Play() {
-	if a.Ctrl != nil {
-		a.Ctrl.Paused = false
-		a.Playing = true
+func (a *AudioPlayer) Play(track *util.AudioFile) error {
+
+	// If a track is already playing, stop it
+	if a.IsPlaying() {
+
+		a.Stop()
 	}
+
+	// Open and set up the new track
+	streamer, format, totalSamples, err := util.OpenAudioFile(track.Path)
+	if err != nil {
+		return err
+	}
+
+	// Update AudioPlayer state
+	a.CurrentStreamer = streamer
+	a.SampleRate = format.SampleRate
+	a.TotalSamples = totalSamples
+	a.SamplesPlayed = 0
+	a.PlayedTime = 0
+	a.TotalTime = time.Duration(totalSamples) * time.Second / time.Duration(format.SampleRate)
+
+	// Create a reference to the streamer to prevent garbage collection
+	wrappedStreamer := beep.Seq(streamer, beep.Callback(func() {
+		a.Playing = false
+	}))
+
+	// Wrap the streamer to track progress
+	progressStreamer := beep.StreamerFunc(func(samples [][2]float64) (n int, ok bool) {
+		n, ok = wrappedStreamer.Stream(samples)
+		a.SamplesPlayed += n
+		a.PlayedTime = time.Duration(a.SamplesPlayed) * time.Second /
+			time.Duration(a.SampleRate)
+		return
+	})
+
+	// Set up volume and control, reusing existing volume settings if they exist
+	currentVolume := 0.0 // Default volume if not set
+	if a.Volume != nil {
+		currentVolume = a.Volume.Volume
+	}
+
+	a.Volume = &effects.Volume{
+		Streamer: progressStreamer,
+		Base:     1,             // Exponential scale base
+		Volume:   currentVolume, // Use the current volume setting
+		Silent:   false,
+	}
+	a.Ctrl = &beep.Ctrl{Streamer: a.Volume}
+
+	// Start playback
+	speaker.Play(a.Ctrl)
+	a.Playing = true
+	a.Ctrl.Paused = false
+
+	return nil
 }
 
 func (a *AudioPlayer) Pause() {
@@ -99,4 +153,8 @@ func (a *AudioPlayer) GetTotalTime() time.Duration {
 
 func (a *AudioPlayer) IsPlaying() bool {
 	return a.Playing && a.Ctrl != nil && !a.Ctrl.Paused
+}
+
+func (a *AudioPlayer) isLooping() bool {
+	return a.Looping
 }

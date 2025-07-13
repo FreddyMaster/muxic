@@ -2,26 +2,32 @@ package player
 
 import (
 	"errors"
+	"fmt"
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/gopxl/beep"
-	"github.com/gopxl/beep/effects"
 	"github.com/gopxl/beep/speaker"
 	"log"
 	"muxic/internal/player/components"
 	"muxic/internal/util"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
+
+type queueUpdatedMsg struct{}
+
+type playlistUpdatedMsg struct{}
+
+type searchResultMsg struct {
+	tracks []*util.AudioFile
+}
 
 // AddToQueueCmd adds the currently selected track to the queue
 func AddToQueueCmd(m *Model) tea.Cmd {
 	return func() tea.Msg {
-		filePath := m.GetCurrentFilePath()
-		if filePath == "" {
-			return errors.New("no track selected")
-		}
-
 		// Get the library instance
-		library := util.GetLibrary()
+		library := components.GetLibrary()
 		if library == nil {
 			err := errors.New("library is nil")
 			log.Println(err)
@@ -32,17 +38,42 @@ func AddToQueueCmd(m *Model) tea.Cmd {
 
 		m.Queue.Add(track)
 		m.UpdateQueueTable()
-		return nil
+
+		// Play the track if it's the first in the queue
+		if m.Queue.Length() == 1 {
+			if err := m.AudioPlayer.Play(track); err != nil {
+				log.Printf("Error playing track: %v", err)
+			}
+		}
+		return queueUpdatedMsg{}
 	}
 }
 
 // RemoveFromQueueCmd removes the currently selected track from the queue
 func RemoveFromQueueCmd(m *Model) tea.Cmd {
 	return func() tea.Msg {
-		index := m.Queue.CurrentIndex
+		if m.viewMode != ViewQueue {
+			log.Println("not in queue mode")
+			return nil
+		}
+		index := m.ActiveFileIndex
+
 		m.Queue.Remove(index)
+
+		// Update cursor position
+		if index >= m.Queue.Length() {
+			m.ActiveFileIndex = m.Queue.Length()
+		}
+
+		// Use the existing UpdateCursorPosition function
+		if err := UpdateCursorPosition(m); err != nil {
+			log.Printf("Error updating cursor position: %v", err)
+			return err
+		}
+
 		m.UpdateQueueTable()
-		return nil
+
+		return queueUpdatedMsg{}
 	}
 }
 
@@ -50,7 +81,8 @@ func RemoveFromQueueCmd(m *Model) tea.Cmd {
 func PlayNextInQueueCmd(m *Model) tea.Cmd {
 	return func() tea.Msg {
 		m.Queue.Next()
-		return nil
+		m.UpdateQueueTable()
+		return queueUpdatedMsg{}
 	}
 }
 
@@ -58,18 +90,25 @@ func PlayNextInQueueCmd(m *Model) tea.Cmd {
 func PlayPreviousInQueueCmd(m *Model) tea.Cmd {
 	return func() tea.Msg {
 		m.Queue.Previous()
-		return nil
+		m.UpdateQueueTable()
+		return queueUpdatedMsg{}
+	}
+}
+
+func ClearQueueCmd(m *Model) tea.Cmd {
+	return func() tea.Msg {
+		m.Queue.Clear()
+		m.UpdateQueueTable()
+		return queueUpdatedMsg{}
 	}
 }
 
 func ViewQueueCmd(m *Model) tea.Cmd {
 	return func() tea.Msg {
 		m.viewMode = ViewQueue
-		return nil
+		return queueUpdatedMsg{}
 	}
 }
-
-type playlistUpdatedMsg struct{}
 
 // CreatePlaylistCmd creates a new playlist
 func CreatePlaylistCmd(m *Model, name string) tea.Cmd {
@@ -105,7 +144,7 @@ func AddToPlaylistCmd(m *Model) tea.Cmd {
 		}
 
 		// Get the library instance
-		library := util.GetLibrary()
+		library := components.GetLibrary()
 		if library == nil {
 			err := errors.New("library is nil")
 			log.Println(err)
@@ -182,8 +221,8 @@ func RemoveFromPlaylistCmd(m *Model) tea.Cmd {
 		m.UpdatePlaylistTable()
 
 		// Update cursor position
-		if oldCursor >= len(m.PlaylistManager.ActivePlaylist.Tracks) {
-			m.ActiveFileIndex = len(m.PlaylistManager.ActivePlaylist.Tracks) - 1
+		if oldCursor >= m.PlaylistManager.ActivePlaylist.Length() {
+			m.ActiveFileIndex = m.PlaylistManager.ActivePlaylist.Length() - 1
 		}
 
 		// Use the existing UpdateCursorPosition function
@@ -199,14 +238,14 @@ func RemoveFromPlaylistCmd(m *Model) tea.Cmd {
 
 // PlayCmd toggles between play and pause for the current track
 func PlayCmd(m *Model) tea.Cmd {
-	filePath := m.GetCurrentFilePath()
-	if filePath == "" {
+	filePath := m.Queue.Current()
+	if filePath == nil {
 		return func() tea.Msg {
 			return errors.New("no track selected")
 		}
 	}
 
-	return playTrack(m, filePath)
+	return nil
 }
 
 // PauseCmd pauses the current playback
@@ -334,92 +373,114 @@ func VolumeMuteCmd(m *Model) tea.Cmd {
 	}
 }
 
-func playTrack(m *Model, filePath string) tea.Cmd {
+// SearchCmd performs a search based on the provided query.
+func SearchCmd(query string) tea.Cmd {
 	return func() tea.Msg {
-
-		// Stop current playback
-		m.AudioPlayer.Stop()
-
-		// Open and set up the new track
-		streamer, format, totalSamples, err := util.OpenAudioFile(filePath)
-		if err != nil {
-			return err
+		// If the query is empty, return no results.
+		if query == "" {
+			return searchResultMsg{tracks: []*util.AudioFile{}}
 		}
 
-		// Update AudioPlayer state
-		m.AudioPlayer.CurrentStreamer = streamer
-		m.AudioPlayer.SampleRate = format.SampleRate
-		m.AudioPlayer.TotalSamples = totalSamples
-		m.AudioPlayer.SamplesPlayed = 0
-		m.AudioPlayer.PlayedTime = 0
-		m.AudioPlayer.TotalTime = time.Duration(totalSamples) * time.Second / time.Duration(format.SampleRate)
-		m.AudioPlayer.PlayedTime = 0
-		m.AudioPlayer.TotalTime = time.Duration(totalSamples) * time.Second / time.Duration(format.SampleRate)
+		library := components.GetLibrary()
+		var filteredTracks []*util.AudioFile
 
-		// Create a reference to the streamer to prevent garbage collection
-		wrappedStreamer := beep.Seq(streamer, beep.Callback(func() {
-			// This callback will be called when the streamer finishes
-			m.AudioPlayer.Playing = false
-		}))
-
-		// Wrap the streamer to track progress
-		progressStreamer := beep.StreamerFunc(func(samples [][2]float64) (n int, ok bool) {
-			n, ok = wrappedStreamer.Stream(samples)
-			m.AudioPlayer.SamplesPlayed += n
-			m.AudioPlayer.PlayedTime = time.Duration(m.AudioPlayer.SamplesPlayed) * time.Second /
-				time.Duration(m.AudioPlayer.SampleRate)
-			return
-		})
-
-		// Set up volume and control, reusing existing volume settings if they exist
-		currentVolume := 0.0 // Default volume if not set
-		if m.AudioPlayer.Volume != nil {
-			currentVolume = m.AudioPlayer.Volume.Volume
+		for _, track := range library.Files {
+			// Simple case-insensitive search in title, artist, and album
+			if strings.Contains(strings.ToLower(track.Title), strings.ToLower(query)) ||
+				strings.Contains(strings.ToLower(track.Artist), strings.ToLower(query)) ||
+				strings.Contains(strings.ToLower(track.Album), strings.ToLower(query)) {
+				filteredTracks = append(filteredTracks, track)
+			}
 		}
 
-		m.AudioPlayer.Volume = &effects.Volume{
-			Streamer: progressStreamer,
-			Base:     2,             // Exponential scale base
-			Volume:   currentVolume, // Use the current volume setting
-			Silent:   false,
-		}
-		m.AudioPlayer.Ctrl = &beep.Ctrl{Streamer: m.AudioPlayer.Volume}
-
-		// Start playback
-		speaker.Play(m.AudioPlayer.Ctrl)
-		m.AudioPlayer.Playing = true
-
-		return nil
+		return searchResultMsg{tracks: filteredTracks}
 	}
 }
 
-// UpdateCursorPosition updates the cursor position in the playlist view, ensuring it stays within valid bounds.
-// Returns an error if the model is nil, playlist is nil, or if the active playlist index is out of range.
+// LoadLibraryCmd scans the music library in the background and returns a message
+// when it's complete.
+func LoadLibraryCmd() tea.Cmd {
+	return func() tea.Msg {
+		// Get the user's music directory.
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			log.Printf("Failed to get home directory: %v", err)
+			// Return an error message or an empty list
+			return LibraryLoadedMsg{Tracks: []*util.AudioFile{}}
+		}
+		musicDir := filepath.Join(homeDir, "Music")
+
+		// Scan for audio files.
+		tracks, err := util.GetAudioFiles(musicDir)
+		if err != nil {
+			log.Printf("Failed to scan audio files: %v", err)
+			// Return an error message or an empty list
+			return LibraryLoadedMsg{Tracks: []*util.AudioFile{}}
+		}
+
+		return LibraryLoadedMsg{Tracks: tracks}
+	}
+}
+
+// UpdateCursorPosition updates the cursor position for the current view
 func UpdateCursorPosition(m *Model) error {
-	// Check if model is nil
 	if m == nil {
 		return errors.New("model is nil")
 	}
-	// Check if playlist exists
-	if m.PlaylistManager == nil {
-		return errors.New("playlist is nil")
+
+	var (
+		currentTable *table.Model
+		listLength   int
+	)
+
+	// Determine which list we're working with based on the current view
+	switch m.viewMode {
+	case ViewLibrary:
+		// For library view, use the library table
+		currentTable = &m.LibraryTable
+		listLength = len(components.GetLibrary().Files)
+
+	case ViewPlaylistTracks, ViewPlaylists:
+		// For playlists, use the appropriate playlist table
+		if m.ActivePlaylistIndex < 0 || m.ActivePlaylistIndex >= len(m.PlaylistTable) {
+			return errors.New("invalid playlist index")
+		}
+		currentTable = &m.PlaylistTable[m.ActivePlaylistIndex]
+		if m.viewMode == ViewPlaylistTracks && m.PlaylistManager.ActivePlaylist != nil {
+			listLength = len(m.PlaylistManager.ActivePlaylist.Tracks)
+		} else {
+			listLength = len(m.PlaylistManager.Playlists)
+		}
+
+	case ViewQueue:
+		// For queue view, use the queue table
+		currentTable = &m.QueueTable
+		listLength = m.Queue.Length()
+
+	default:
+		return fmt.Errorf("unsupported view mode: %v", m.viewMode)
 	}
 
-	// Validate active playlist index
-	if m.ActivePlaylistIndex < 0 || m.ActivePlaylistIndex >= len(m.PlaylistTable) {
-		return errors.New("invalid playlist index")
+	// Ensure we have a valid table
+	if currentTable == nil {
+		return errors.New("current table is nil")
 	}
 
-	// Calculate new cursor position
-	newCursor := m.ActiveFileIndex
+	// Get current cursor position
+	currentCursor := currentTable.Cursor()
 
-	if newCursor < 0 {
-		newCursor = 0
+	// Adjust cursor if it's out of bounds
+	if listLength == 0 {
+		currentCursor = 0
+	} else if currentCursor >= listLength {
+		currentCursor = listLength - 1
+	} else if currentCursor < 0 {
+		currentCursor = 0
 	}
 
 	// Update the cursor position
-	m.ActiveFileIndex = newCursor
-	m.PlaylistTable[m.ActivePlaylistIndex].SetCursor(newCursor)
+	currentTable.SetCursor(currentCursor)
+	m.ActiveFileIndex = currentCursor
 
 	return nil
 }

@@ -216,10 +216,6 @@ func (pm *PlaylistManager) SortPlaylist(playlistID int, by string, ascending boo
 	return nil
 }
 
-func (pm *PlaylistManager) Length() int {
-	return len(pm.ActivePlaylist.Tracks)
-}
-
 func (pm *PlaylistManager) ToTableRows(playlistID int) []table.Row {
 	playlist, _ := pm.GetPlaylist(playlistID)
 	rows := make([]table.Row, len(playlist.Tracks))
@@ -233,4 +229,8 @@ func (pm *PlaylistManager) ToTableRows(playlistID int) []table.Row {
 		}
 	}
 	return rows
+}
+
+func (p *Playlist) Length() int {
+	return len(p.Tracks)
 }

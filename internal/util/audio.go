@@ -2,15 +2,12 @@ package util
 
 import (
 	"fmt"
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/dhowden/tag"
 	"github.com/gopxl/beep"
-	"github.com/gopxl/beep/effects"
 	"github.com/gopxl/beep/mp3"
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,15 +21,6 @@ type AudioFile struct {
 	Duration string
 	Path     string
 	FileName string
-}
-
-// ToTableRow converts an AudioFile to a table.Row
-func (a *AudioFile) ToLibraryRow() table.Row {
-	return table.Row{a.Title, a.Artist, a.Album, a.Duration}
-}
-
-func (a *AudioFile) ToPlaylistRow(index int) table.Row {
-	return table.Row{strconv.Itoa(index + 1), a.Title, a.Artist, a.Album, a.Duration}
 }
 
 // OpenAudioFile opens an MP3 file and decodes it to return the audio streamer, format, and total samples.
@@ -252,21 +240,4 @@ func GetAudioFiles(dir string) ([]*AudioFile, error) {
 	}
 
 	return audioFiles, nil
-}
-
-// NewAudioCtrl creates a new beep.Ctrl for the given streamer.
-func NewAudioCtrl(streamer beep.Streamer) *beep.Ctrl {
-	return &beep.Ctrl{
-		Streamer: streamer,
-		Paused:   false,
-	}
-}
-
-func NewVolumeCtrl(streamer beep.Streamer) *effects.Volume {
-	return &effects.Volume{
-		Streamer: streamer,
-		Base:     2, // Exponential scale base
-		Volume:   0, // Default volume (2^0 = 1x)
-		Silent:   false,
-	}
 }

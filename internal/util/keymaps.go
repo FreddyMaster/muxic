@@ -44,10 +44,10 @@ type KeyMap struct {
 	RemoveFromQueue key.Binding
 	ViewQueue       key.Binding
 	PlayNext        key.Binding
+	PlayPrevious    key.Binding
 	ClearQueue      key.Binding
 }
 
-// DefaultKeyMap provides the default key bindings.
 var DefaultKeyMap = KeyMap{
 	// Navigation
 	Up: key.NewBinding(
@@ -67,48 +67,48 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("→/l", "select"),
 	),
 	Back: key.NewBinding(
-		key.WithKeys("esc"),
-		key.WithHelp("esc", "back"),
+		key.WithKeys("esc", "backspace"),
+		key.WithHelp("esc/⌫", "back"),
 	),
 
 	// Playback controls
 	Play: key.NewBinding(
-		key.WithKeys(" ", "p", "enter"),
-		key.WithHelp("space/p/enter", "play/pause/select"),
+		key.WithKeys("space", "enter"),
+		key.WithHelp("space/enter", "play/pause"),
 	),
 	Pause: key.NewBinding(
-		key.WithKeys(" ", "p"),
-		key.WithHelp("space/p", "play/pause"),
+		key.WithKeys("space"),
+		key.WithHelp("space", "pause"),
 	),
 	Stop: key.NewBinding(
-		key.WithKeys("s"),
-		key.WithHelp("s", "stop"),
+		key.WithKeys("x"),
+		key.WithHelp("x", "stop"),
 	),
 	SkipBackward: key.NewBinding(
-		key.WithKeys("b"),
-		key.WithHelp("b", "skip backward"),
+		key.WithKeys("left", "z"),
+		key.WithHelp("←/z", "rewind 5s"),
 	),
 	SkipForward: key.NewBinding(
-		key.WithKeys("n"),
-		key.WithHelp("n", "skip forward"),
+		key.WithKeys("right", "c"),
+		key.WithHelp("→/c", "forward 5s"),
 	),
 	NextTrack: key.NewBinding(
-		key.WithKeys("]"),
-		key.WithHelp("]", "next track"),
+		key.WithKeys("n", "shift+right"),
+		key.WithHelp("n/⇨", "next track"),
 	),
 	PreviousTrack: key.NewBinding(
-		key.WithKeys("["),
-		key.WithHelp("[", "previous track"),
+		key.WithKeys("p", "shift+left"),
+		key.WithHelp("p/⇦", "previous track"),
 	),
 
 	// Volume controls
 	VolumeUp: key.NewBinding(
-		key.WithKeys("+"),
-		key.WithHelp("+", "volume up"),
+		key.WithKeys("=", "+"),
+		key.WithHelp("= or +", "volume up"),
 	),
 	VolumeDown: key.NewBinding(
-		key.WithKeys("-"),
-		key.WithHelp("-", "volume down"),
+		key.WithKeys("-", "_"),
+		key.WithHelp("- or _", "volume down"),
 	),
 	VolumeMute: key.NewBinding(
 		key.WithKeys("m"),
@@ -141,8 +141,8 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("ctrl+a", "add to playlist"),
 	),
 	RemoveFromPlaylist: key.NewBinding(
-		key.WithKeys("d"),
-		key.WithHelp("d", "remove from playlist"),
+		key.WithKeys("del"),
+		key.WithHelp("del", "remove from playlist"),
 	),
 
 	// Queue controls
@@ -151,20 +151,24 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("a", "add to queue"),
 	),
 	RemoveFromQueue: key.NewBinding(
-		key.WithKeys("d"),
-		key.WithHelp("d", "remove from queue"),
+		key.WithKeys("r"),
+		key.WithHelp("r", "remove from queue"),
 	),
 	ViewQueue: key.NewBinding(
 		key.WithKeys("v"),
 		key.WithHelp("v", "view queue"),
 	),
 	PlayNext: key.NewBinding(
-		key.WithKeys("n"),
-		key.WithHelp("n", "play next in queue"),
+		key.WithKeys("]"),
+		key.WithHelp("]", "play next in queue"),
+	),
+	PlayPrevious: key.NewBinding(
+		key.WithKeys("["),
+		key.WithHelp("[", "play previous in queue"),
 	),
 	ClearQueue: key.NewBinding(
-		key.WithKeys("shift+d"),
-		key.WithHelp("shift+d", "clear queue"),
+		key.WithKeys("ctrl+shift+d"),
+		key.WithHelp("ctrl+shift+d", "clear queue"),
 	),
 }
 

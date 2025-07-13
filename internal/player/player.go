@@ -2,6 +2,7 @@ package player
 
 import (
 	"fmt"
+	"muxic/internal/player/components"
 	"muxic/internal/util"
 )
 
@@ -17,7 +18,7 @@ func NewMusicPlayer(dir string) (*MusicPlayer, error) {
 	}
 
 	// Get the library instance and add all audio files
-	library := util.GetLibrary()
+	library := components.GetLibrary()
 	for _, file := range audioFiles {
 		library.AddFile(file)
 	}
