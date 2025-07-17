@@ -38,6 +38,7 @@ type KeyMap struct {
 	CreatePlaylist     key.Binding
 	AddToPlaylist      key.Binding
 	RemoveFromPlaylist key.Binding
+	ShufflePlaylist    key.Binding
 
 	// Queue controls
 	AddToQueue      key.Binding
@@ -141,8 +142,12 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("ctrl+a", "add to playlist"),
 	),
 	RemoveFromPlaylist: key.NewBinding(
-		key.WithKeys("del"),
-		key.WithHelp("del", "remove from playlist"),
+		key.WithKeys("r"),
+		key.WithHelp("r", "remove from playlist"),
+	),
+	ShufflePlaylist: key.NewBinding(
+		key.WithKeys("ctrl+s"),
+		key.WithHelp("ctrl+s", "shuffle playlist"),
 	),
 
 	// Queue controls

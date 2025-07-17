@@ -13,7 +13,6 @@ type Queue struct {
 	CurrentIndex int
 	Playing      bool
 	mu           sync.Mutex
-	onTrackEnd   func()
 }
 
 func NewQueue() *Queue {
@@ -33,6 +32,11 @@ func (q *Queue) Next() {
 	if q.CurrentIndex >= len(q.Tracks) {
 		q.CurrentIndex = 0
 	}
+}
+
+func (q *Queue) GetNext() *util.AudioFile {
+	q.Next()
+	return q.Current()
 }
 
 func (q *Queue) Previous() {
@@ -63,6 +67,10 @@ func (q *Queue) Length() int {
 	return len(q.Tracks)
 }
 
+func (q *Queue) IsEmpty() bool {
+	return len(q.Tracks) == 0
+}
+
 func (q *Queue) ToTableRows() []table.Row {
 	rows := make([]table.Row, len(q.Tracks))
 	for i, t := range q.Tracks {
@@ -75,22 +83,4 @@ func (q *Queue) ToTableRows() []table.Row {
 		}
 	}
 	return rows
-}
-
-func (q *Queue) AdvanceAndGetNext() *util.AudioFile {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	// Check if there are any tracks at all.
-	if len(q.Tracks) == 0 {
-		return nil
-	}
-
-	// Check if there is a next track in the queue.
-	if q.CurrentIndex+1 < len(q.Tracks) {
-		q.CurrentIndex++
-		return q.Tracks[q.CurrentIndex]
-	}
-	
-	return nil // No next track
 }

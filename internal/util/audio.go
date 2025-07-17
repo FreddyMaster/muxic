@@ -18,6 +18,7 @@ type AudioFile struct {
 	Title    string
 	Artist   string
 	Album    string
+	Picture  *tag.Picture
 	Duration string
 	Path     string
 	FileName string
@@ -72,17 +73,18 @@ func formatDuration(d time.Duration) string {
 var (
 	metadataCache = make(map[string]struct {
 		title, artist, album, duration string
+		picture                        *tag.Picture
 	})
 	cacheMutex sync.RWMutex
 )
 
 // ReadAudioMetadata extracts metadata from the audio file at the specified path.
-func ReadAudioMetadata(path, defaultName string) (string, string, string, string) {
+func ReadAudioMetadata(path, defaultName string) (string, string, string, *tag.Picture, string) {
 	// Check if the file is in the cache
 	cacheMutex.RLock()
 	if cached, exists := metadataCache[path]; exists {
 		cacheMutex.RUnlock()
-		return cached.title, cached.artist, cached.album, cached.duration
+		return cached.title, cached.artist, cached.album, cached.picture, cached.duration
 	}
 	cacheMutex.RUnlock()
 
@@ -90,18 +92,19 @@ func ReadAudioMetadata(path, defaultName string) (string, string, string, string
 	title := defaultName
 	artist := "Unknown"
 	album := "Unknown"
+	picture := &tag.Picture{}
 	duration := "0:00"
 
 	// Open file for reading
 	f, err := os.Open(path)
 	if err != nil {
-		return defaultName, "Unknown", "Unknown", "0:00"
+		return title, artist, album, picture, duration
 	}
 
 	// Get file info
 	fileInfo, err := f.Stat()
 	if err != nil {
-		return defaultName, "Unknown", "Unknown", "0:00"
+		return title, artist, album, picture, duration
 	}
 
 	// Read metadata
@@ -116,6 +119,9 @@ func ReadAudioMetadata(path, defaultName string) (string, string, string, string
 		if a := meta.Album(); a != "" {
 			album = a
 		}
+		if a := meta.Picture(); a != nil {
+			picture = a
+		}
 	}
 
 	// Get duration
@@ -127,15 +133,17 @@ func ReadAudioMetadata(path, defaultName string) (string, string, string, string
 	cacheMutex.Lock()
 	metadataCache[path] = struct {
 		title, artist, album, duration string
+		picture                        *tag.Picture
 	}{
 		title:    title,
 		artist:   artist,
 		album:    album,
+		picture:  picture,
 		duration: duration,
 	}
 	cacheMutex.Unlock()
 
-	return title, artist, album, duration
+	return title, artist, album, picture, duration
 }
 
 // getFileDurationFromReader reads the duration of an audio file from the provided file.
@@ -197,13 +205,14 @@ func GetAudioFiles(dir string) ([]*AudioFile, error) {
 			defer wg.Done()
 
 			path := filepath.Join(dir, entry.Name())
-			title, artist, album, duration := ReadAudioMetadata(path, entry.Name())
+			title, artist, album, picture, duration := ReadAudioMetadata(path, entry.Name())
 
 			results <- result{
 				file: &AudioFile{
 					Title:    title,
 					Artist:   artist,
 					Album:    album,
+					Picture:  picture,
 					Duration: duration,
 					Path:     path,
 					FileName: entry.Name(),

@@ -1,382 +1,344 @@
+// commands.go contains all the command handlers for the music player UI.
+// In the Bubble Tea architecture, commands are functions that perform I/O
+// or other side effects (like making network requests, accessing hardware,
+// or reading from disk). They run in a separate goroutine so as not to
+// block the main UI loop.
+//
+// Each command function here is a "command factory": it takes the necessary
+// data and returns a `tea.Cmd`, which is a `func() tea.Msg`. The Bubble Tea
+// runtime executes this function and sends the returned `tea.Msg` to the
+// main `Update` function for state processing.
 package player
 
 import (
 	"errors"
-	"fmt"
-	"github.com/charmbracelet/bubbles/table"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/gopxl/beep/speaker"
 	"log"
-	"muxic/internal/player/components"
-	"muxic/internal/util"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/gopxl/beep/speaker"
+	"muxic/internal/player/components"
+	"muxic/internal/util"
 )
 
-type queueUpdatedMsg struct{}
+// --- Message Definitions ---
+// Messages are the primary way different parts of the application communicate.
+// Commands return messages to signal completion or report results. The `Update`
+// function processes these messages to change the application state.
 
-type playlistUpdatedMsg struct{}
-
+// searchResultMsg is a message that carries the results of a library search.
 type searchResultMsg struct {
 	tracks []*util.AudioFile
 }
 
-// AddToQueueCmd adds the currently selected track to the queue
-func AddToQueueCmd(m *Model) tea.Cmd {
+// --- Queue Messages ---
+
+// addTrackToQueueMsg is a message that signals a request to add a specific track
+// to the playback queue.
+type addTrackToQueueMsg struct {
+	track *util.AudioFile
+}
+
+// removeTrackFromQueueMsg is a message that signals a request to remove a track
+// from the playback queue at a specific index.
+type removeTrackFromQueueMsg struct {
+	index int
+}
+
+// nextTrackInQueueMsg signals a request to advance to the next track in the queue.
+type nextTrackInQueueMsg struct{}
+
+// previousTrackInQueueMsg signals a request to go back to the previous track in the queue.
+type previousTrackInQueueMsg struct{}
+
+// clearQueueMsg signals a request to remove all tracks from the playback queue.
+type clearQueueMsg struct{}
+
+// viewQueueMsg signals a request to switch the UI view to the queue.
+type viewQueueMsg struct{}
+
+// --- Playlist Messages ---
+
+// playlistCreatedMsg is sent when a new playlist has been successfully created.
+// It carries the newly created playlist object.
+type playlistCreatedMsg struct {
+	playlist *components.Playlist
+}
+
+// playlistDeletedMsg is sent when a playlist has been successfully deleted.
+// It carries the ID of the deleted playlist.
+type playlistDeletedMsg struct {
+	id int
+}
+
+// trackAddedToPlaylistMsg is sent when a track has been successfully added to a playlist.
+type trackAddedToPlaylistMsg struct {
+	playlistID int
+	track      *util.AudioFile
+}
+
+// trackRemovedFromPlaylistMsg is sent when a track has been successfully removed from a playlist.
+type trackRemovedFromPlaylistMsg struct {
+	playlistID int
+	trackIndex int
+}
+
+// playlistShuffledMsg is sent when a playlist has been successfully shuffled.
+type playlistShuffledMsg struct {
+	playlistID int
+}
+
+// --- Player Messages ---
+
+// pauseMsg is sent when the audio player has been successfully paused.
+type pauseMsg struct{}
+
+// stopMsg is sent when the audio player has been successfully stopped.
+type stopMsg struct{}
+
+// playbackSeekedMsg is sent after a successful seek operation (e.g., skip forward/backward).
+// It carries the new stream position and the calculated human-readable time.
+type playbackSeekedMsg struct {
+	newPosition   int
+	newPlayedTime time.Duration
+}
+
+// volumeChangedMsg is sent after the volume has been successfully changed.
+// It carries the new volume level.
+type volumeChangedMsg struct {
+	newVolume float64
+}
+
+// --- Command Factories ---
+
+// AddToQueueCmd creates a command that wraps a track in a message for the Update function.
+// This is a "pure" command; it has no side effects itself and simply passes data.
+func AddToQueueCmd(track *util.AudioFile) tea.Cmd {
 	return func() tea.Msg {
-		// Get the library instance
-		library := components.GetLibrary()
-		if library == nil {
-			err := errors.New("library is nil")
-			log.Println(err)
-			return err
-		}
-
-		track := library.Files[m.ActiveFileIndex]
-
-		m.Queue.Add(track)
-		m.UpdateQueueTable()
-
-		// Play the track if it's the first in the queue
-		if m.Queue.Length() == 1 {
-			if err := m.AudioPlayer.Play(track); err != nil {
-				log.Printf("Error playing track: %v", err)
-			}
-		}
-		return queueUpdatedMsg{}
+		return addTrackToQueueMsg{track: track}
 	}
 }
 
-// RemoveFromQueueCmd removes the currently selected track from the queue
-func RemoveFromQueueCmd(m *Model) tea.Cmd {
+// RemoveFromQueueCmd creates a command to request removing a track at a specific index.
+func RemoveFromQueueCmd(index int) tea.Cmd {
 	return func() tea.Msg {
-		if m.viewMode != ViewQueue {
-			log.Println("not in queue mode")
-			return nil
-		}
-		index := m.ActiveFileIndex
-
-		m.Queue.Remove(index)
-
-		// Update cursor position
-		if index >= m.Queue.Length() {
-			m.ActiveFileIndex = m.Queue.Length()
-		}
-
-		// Use the existing UpdateCursorPosition function
-		if err := UpdateCursorPosition(m); err != nil {
-			log.Printf("Error updating cursor position: %v", err)
-			return err
-		}
-
-		m.UpdateQueueTable()
-
-		return queueUpdatedMsg{}
+		return removeTrackFromQueueMsg{index: index}
 	}
 }
 
-// PlayNextInQueueCmd plays the next track in the queue
-func PlayNextInQueueCmd(m *Model) tea.Cmd {
+// PlayNextInQueueCmd creates a command to request playing the next track.
+func PlayNextInQueueCmd() tea.Cmd {
 	return func() tea.Msg {
-		m.Queue.Next()
-		m.UpdateQueueTable()
-		return queueUpdatedMsg{}
+		return nextTrackInQueueMsg{}
 	}
 }
 
-// PlayPreviousInQueueCmd plays the previous track in the queue
-func PlayPreviousInQueueCmd(m *Model) tea.Cmd {
+// PlayPreviousInQueueCmd creates a command to request playing the previous track.
+func PlayPreviousInQueueCmd() tea.Cmd {
 	return func() tea.Msg {
-		m.Queue.Previous()
-		m.UpdateQueueTable()
-		return queueUpdatedMsg{}
+		return previousTrackInQueueMsg{}
 	}
 }
 
-func ClearQueueCmd(m *Model) tea.Cmd {
+// ClearQueueCmd creates a command to request clearing the queue.
+func ClearQueueCmd() tea.Cmd {
 	return func() tea.Msg {
-		m.Queue.Clear()
-		m.UpdateQueueTable()
-		return queueUpdatedMsg{}
+		return clearQueueMsg{}
 	}
 }
 
-func ViewQueueCmd(m *Model) tea.Cmd {
+// ViewQueueCmd creates a command to request switching to the queue view.
+func ViewQueueCmd() tea.Cmd {
 	return func() tea.Msg {
-		m.viewMode = ViewQueue
-		return queueUpdatedMsg{}
+		return viewQueueMsg{}
 	}
 }
 
-// CreatePlaylistCmd creates a new playlist
-func CreatePlaylistCmd(m *Model, name string) tea.Cmd {
+// CreatePlaylistCmd performs the side effect of creating a new playlist using the PlaylistManager.
+// It handles potential errors and returns the newly created playlist on success.
+func CreatePlaylistCmd(pm *components.PlaylistManager, name string) tea.Cmd {
 	return func() tea.Msg {
-		if m.PlaylistManager == nil {
-			m.PlaylistManager = components.NewPlaylistManager()
+		if pm == nil {
+			return errors.New("cannot create playlist: playlist manager is nil")
 		}
 
-		playlist, err := m.PlaylistManager.CreatePlaylist(name)
-		err = m.PlaylistManager.SetActivePlaylist(playlist.ID)
+		playlist, err := pm.CreatePlaylist(name)
 		if err != nil {
-			log.Printf("Error setting active playlist: %v", err)
 			return err
 		}
-		// Return playlistUpdatedMsg to indicate success and update the view
-		return playlistUpdatedMsg{}
+
+		// Also set the new playlist as active.
+		if err := pm.SetActivePlaylist(playlist.ID); err != nil {
+			return err
+		}
+
+		return playlistCreatedMsg{playlist: playlist}
 	}
 }
 
-// AddToPlaylistCmd adds the currently selected track to the active playlist
-func AddToPlaylistCmd(m *Model) tea.Cmd {
+// AddToPlaylistCmd performs the side effect of adding a track to a specified playlist.
+func AddToPlaylistCmd(pm *components.PlaylistManager, playlistID int, track *util.AudioFile) tea.Cmd {
 	return func() tea.Msg {
-		// return error if no track is selected
-		if m.ActiveFileIndex < 0 {
-			err := errors.New("no track selected")
-			log.Println(err)
-			return err
+		if pm == nil {
+			return errors.New("cannot add to playlist: playlist manager is nil")
+		}
+		if track == nil {
+			return errors.New("cannot add to playlist: track is nil")
 		}
 
-		// return error if playlist manager is nil
-		if m.PlaylistManager == nil {
-			m.PlaylistManager = components.NewPlaylistManager()
-		}
-
-		// Get the library instance
-		library := components.GetLibrary()
-		if library == nil {
-			err := errors.New("library is nil")
-			log.Println(err)
-			return err
-		}
-
-		// Ensure there's an active playlist
-		if m.PlaylistManager.ActivePlaylist == nil {
-			// Create a default playlist if none exists
-			playlist, err := m.PlaylistManager.CreatePlaylist("My Playlist")
-			if err != nil {
-				log.Printf("Failed to create default playlist: %v", err)
-				return err
-			}
-			m.PlaylistManager.ActivePlaylist = playlist
-		}
-
-		// Get the selected track
-		track := library.Files[m.ActiveFileIndex]
-
-		// Add the track to the active playlist
-		err := m.PlaylistManager.AddTracks(m.PlaylistManager.ActivePlaylist.ID, track)
-		if err != nil {
+		// Perform the core operation.
+		if err := pm.AddTracks(playlistID, track); err != nil {
 			log.Printf("Failed to add track to playlist: %v", err)
 			return err
 		}
 
-		// Refresh the playlist view if we're in playlist view
-		m.UpdatePlaylistTable()
-
-		// Return playlistUpdatedMsg to indicate success and update the view
-		return playlistUpdatedMsg{}
+		return trackAddedToPlaylistMsg{playlistID: playlistID, track: track}
 	}
 }
 
-// RemoveFromPlaylistCmd removes the selected track from the active playlist
-func RemoveFromPlaylistCmd(m *Model) tea.Cmd {
+// RemoveFromPlaylistCmd performs the side effect of removing a track from a playlist.
+func RemoveFromPlaylistCmd(pm *components.PlaylistManager, playlistID int, trackIndex int) tea.Cmd {
 	return func() tea.Msg {
-		// return error if no track is selected
-		if m.ActiveFileIndex < 0 {
-			err := errors.New("no track selected")
-			log.Println(err)
+		if pm == nil {
+			return errors.New("cannot remove from playlist: playlist manager is nil")
+		}
+
+		// Pre-condition check before performing the action.
+		if trackIndex < 0 || trackIndex >= pm.ActivePlaylist.Length() {
+			return errors.New("cannot remove from playlist: track index out of range")
+		}
+
+		if err := pm.RemoveTrack(playlistID, trackIndex); err != nil {
+			log.Printf("Failed to remove track from playlist: %v", err)
 			return err
 		}
 
-		// return error if playlist manager is nil
-		if m.PlaylistManager == nil {
-			m.PlaylistManager = components.NewPlaylistManager()
-		}
-
-		// Ensure there's an active playlist
-		if m.PlaylistManager.ActivePlaylist == nil {
-			// Create a default playlist if none exists
-			playlist, err := m.PlaylistManager.CreatePlaylist("My Playlist")
-			if err != nil {
-				log.Printf("Failed to create default playlist: %v", err)
-				return err
-			}
-			m.PlaylistManager.ActivePlaylist = playlist
-		}
-
-		// Store the current cursor position
-		oldCursor := m.ActiveFileIndex
-
-		// Add the track to the active playlist
-		err := m.PlaylistManager.RemoveTrack(m.PlaylistManager.ActivePlaylist.ID, m.ActiveFileIndex)
-
-		if err != nil {
-			log.Printf("Failed to removetrack to playlist: %v", err)
-			return err
-		}
-
-		// Refresh the playlist view if we're in playlist view
-		m.UpdatePlaylistTable()
-
-		// Update cursor position
-		if oldCursor >= m.PlaylistManager.ActivePlaylist.Length() {
-			m.ActiveFileIndex = m.PlaylistManager.ActivePlaylist.Length() - 1
-		}
-
-		// Use the existing UpdateCursorPosition function
-		if err := UpdateCursorPosition(m); err != nil {
-			log.Printf("Error updating cursor position: %v", err)
-			return err
-		}
-
-		// Return playlistUpdatedMsg to indicate success and update the view
-		return playlistUpdatedMsg{}
+		return trackRemovedFromPlaylistMsg{playlistID: playlistID, trackIndex: trackIndex}
 	}
 }
 
-// PlayCmd toggles between play and pause for the current track
-func PlayCmd(m *Model) tea.Cmd {
-	filePath := m.Queue.Current()
-	if filePath == nil {
-		return func() tea.Msg {
-			return errors.New("no track selected")
-		}
-	}
-
-	return nil
-}
-
-// PauseCmd pauses the current playback
-func PauseCmd(m *Model) tea.Cmd {
+func ShufflePlaylistCmd(pm *components.PlaylistManager, playlistID int) tea.Cmd {
 	return func() tea.Msg {
-		if m.AudioPlayer.Ctrl != nil {
-			m.AudioPlayer.Ctrl.Paused = true
-			m.AudioPlayer.Playing = false
-		} else {
+		if pm == nil {
+			return errors.New("cannot shuffle playlist: playlist manager is nil")
+		}
+
+		if err := pm.ShufflePlaylist(playlistID); err != nil {
+			log.Printf("Failed to shuffle playlist: %v", err)
+			return err
+		}
+
+		return playlistShuffledMsg{playlistID: playlistID}
+	}
+}
+
+// PauseCmd performs the side effect of pausing playback via the audio speaker.
+// It locks the speaker to ensure thread safety.
+func PauseCmd(player *components.AudioPlayer) tea.Cmd {
+	return func() tea.Msg {
+		if player.Ctrl == nil {
 			return errors.New("no active playback to pause")
-
 		}
-		return nil
+		speaker.Lock()
+		player.Ctrl.Paused = true
+		speaker.Unlock()
+
+		return pauseMsg{}
 	}
 }
 
-// StopCmd stops the current playback
-func StopCmd(m *Model) tea.Cmd {
+// StopCmd performs the side effects of clearing the speaker and closing the audio stream.
+func StopCmd(player *components.AudioPlayer) tea.Cmd {
 	return func() tea.Msg {
 		speaker.Clear()
-		m.AudioPlayer.Playing = false
-		if m.AudioPlayer.CurrentStreamer != nil {
-			err := m.AudioPlayer.CurrentStreamer.Close()
-			if err != nil {
-				return err
 
-			}
-			m.AudioPlayer.CurrentStreamer = nil
-		}
-		m.AudioPlayer.PlayedTime = 0
-		m.AudioPlayer.SamplesPlayed = 0
-		m.Progress.SetPercent(0)
-		return nil
-	}
-}
-
-// SkipForwardCmd Skips 10 seconds forward
-func SkipForwardCmd(m *Model) tea.Cmd {
-	return func() tea.Msg {
-		if m.AudioPlayer.CurrentStreamer != nil {
-			speaker.Lock()
-			newPos := m.AudioPlayer.CurrentStreamer.Position() + 10*int(m.AudioPlayer.SampleRate)
-			if newPos > m.AudioPlayer.CurrentStreamer.Len() {
-				// If the track is longer than 10 seconds, seek to the end
-				newPos = m.AudioPlayer.CurrentStreamer.Len()
-			}
-			if err := m.AudioPlayer.CurrentStreamer.Seek(newPos); err != nil {
+		if player.CurrentStreamer != nil {
+			// Closing the stream is the core I/O operation that can fail.
+			if err := player.CurrentStreamer.Close(); err != nil {
+				log.Printf("Error closing audio streamer: %v", err)
 				return err
 			}
-			m.AudioPlayer.PlayedTime = time.Duration(newPos) * time.Second / time.Duration(m.AudioPlayer.SampleRate)
-			m.AudioPlayer.SamplesPlayed = newPos
-			speaker.Unlock()
 		}
-		return nil
+
+		return stopMsg{}
 	}
 }
 
-// SkipBackwardCmd Skip 10 seconds backward
-func SkipBackwardCmd(m *Model) tea.Cmd {
+// SkipForwardCmd performs the side effect of seeking the audio stream forward by 10 seconds.
+// It calculates the new position and returns the result in a message.
+func SkipForwardCmd(player *components.AudioPlayer) tea.Cmd {
 	return func() tea.Msg {
-
-		if m.AudioPlayer.CurrentStreamer != nil {
-			speaker.Lock()
-			newPos := m.AudioPlayer.CurrentStreamer.Position() - 10*int(m.AudioPlayer.SampleRate)
-			if newPos < 0 {
-				// If the track is shorter than 10 seconds, seek to the beginning
-				newPos = 0
-			}
-			if err := m.AudioPlayer.CurrentStreamer.Seek(newPos); err != nil {
-				return err
-
-			}
-			m.AudioPlayer.PlayedTime = time.Duration(newPos) * time.Second / time.Duration(m.AudioPlayer.SampleRate)
-			m.AudioPlayer.SamplesPlayed = newPos
-			speaker.Unlock()
+		if player.CurrentStreamer == nil {
+			return errors.New("no active playback to skip forward")
 		}
-		return nil
-	}
-}
 
-func NextTrackCmd(m *Model) tea.Cmd {
-	return func() tea.Msg {
-		return nil
-	}
-}
+		// Defer unlock to ensure it's always called, even if an error occurs.
+		speaker.Lock()
+		defer speaker.Unlock()
 
-func PreviousTrackCmd(m *Model) tea.Cmd {
-	return func() tea.Msg {
-		return nil
-	}
-}
+		currentPos := player.CurrentStreamer.Position()
+		sampleRate := int(player.SampleRate)
+		newPos := currentPos + (10 * sampleRate) // 10 seconds forward
+		streamerLen := player.CurrentStreamer.Len()
 
-// VolumeUpCmd Increases the volume
-func VolumeUpCmd(m *Model) tea.Cmd {
-	return func() tea.Msg {
-		if m.AudioPlayer.Volume != nil {
-			m.AudioPlayer.SetVolume(m.AudioPlayer.Volume.Volume + 0.1)
-		} else {
-			return errors.New("volume is nil")
-
+		if newPos > streamerLen {
+			newPos = streamerLen
 		}
-		return nil
-	}
-}
-
-// VolumeDownCmd Decreases the volume
-func VolumeDownCmd(m *Model) tea.Cmd {
-	return func() tea.Msg {
-		if m.AudioPlayer.Volume != nil {
-			m.AudioPlayer.SetVolume(m.AudioPlayer.Volume.Volume - 0.1)
-		} else {
-			return errors.New("volume is nil")
+		if err := player.CurrentStreamer.Seek(newPos); err != nil {
+			return err
 		}
-		return nil
+		// Calculate the new human-readable time to send back to the model.
+		newPlayedTime := time.Duration(newPos) * time.Second / time.Duration(sampleRate)
+
+		return playbackSeekedMsg{newPosition: newPos, newPlayedTime: newPlayedTime}
 	}
 }
 
-// VolumeMuteCmd Mutes the volume
-func VolumeMuteCmd(m *Model) tea.Cmd {
+// SkipBackwardCmd performs the side effect of seeking the audio stream backward by 10 seconds.
+func SkipBackwardCmd(player *components.AudioPlayer) tea.Cmd {
 	return func() tea.Msg {
-		if m.AudioPlayer.Volume != nil {
-			m.AudioPlayer.Volume.Silent = !m.AudioPlayer.Volume.Silent
+		if player.CurrentStreamer == nil {
+			return errors.New("no active playback to skip backward")
 		}
-		return nil
+
+		speaker.Lock()
+		defer speaker.Unlock()
+
+		currentPos := player.CurrentStreamer.Position()
+		sampleRate := int(player.SampleRate)
+		newPos := currentPos - (10 * sampleRate)
+
+		if newPos < 0 {
+			newPos = 0
+		}
+		if err := player.CurrentStreamer.Seek(newPos); err != nil {
+			return err
+		}
+		newPlayedTime := time.Duration(newPos) * time.Second / time.Duration(sampleRate)
+
+		return playbackSeekedMsg{newPosition: newPos, newPlayedTime: newPlayedTime}
 	}
 }
 
-// SearchCmd performs a search based on the provided query.
+// SetVolumeCmd is a reusable command that performs the side effect of setting the player volume.
+// It's used by Volume Up, Volume Down, etc., which calculate the target level in the Update loop.
+func SetVolumeCmd(player *components.AudioPlayer, newVolume float64) tea.Cmd {
+	return func() tea.Msg {
+		if player == nil || player.Volume == nil {
+			return errors.New("cannot set volume: player or volume controller is nil")
+		}
+		player.SetVolume(newVolume)
+		return volumeChangedMsg{newVolume: newVolume}
+	}
+}
+
+// SearchCmd performs a synchronous search of the library. As this is a fast, in-memory
+// operation, it doesn't need to be a complex command, but wrapping it maintains consistency.
 func SearchCmd(query string) tea.Cmd {
 	return func() tea.Msg {
-		// If the query is empty, return no results.
 		if query == "" {
 			return searchResultMsg{tracks: []*util.AudioFile{}}
 		}
@@ -397,90 +359,24 @@ func SearchCmd(query string) tea.Cmd {
 	}
 }
 
-// LoadLibraryCmd scans the music library in the background and returns a message
-// when it's complete.
+// LoadLibraryCmd performs the initial, potentially long-running I/O operation of
+// scanning the user's Music directory for audio files.
 func LoadLibraryCmd() tea.Cmd {
 	return func() tea.Msg {
-		// Get the user's music directory.
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
 			log.Printf("Failed to get home directory: %v", err)
-			// Return an error message or an empty list
-			return LibraryLoadedMsg{Tracks: []*util.AudioFile{}}
+			return err // Return the error as a message for the Update loop.
 		}
 		musicDir := filepath.Join(homeDir, "Music")
 
-		// Scan for audio files.
 		tracks, err := util.GetAudioFiles(musicDir)
 		if err != nil {
 			log.Printf("Failed to scan audio files: %v", err)
-			// Return an error message or an empty list
-			return LibraryLoadedMsg{Tracks: []*util.AudioFile{}}
+			return err
 		}
 
+		// On success, return a message with the loaded tracks.
 		return LibraryLoadedMsg{Tracks: tracks}
 	}
-}
-
-// UpdateCursorPosition updates the cursor position for the current view
-func UpdateCursorPosition(m *Model) error {
-	if m == nil {
-		return errors.New("model is nil")
-	}
-
-	var (
-		currentTable *table.Model
-		listLength   int
-	)
-
-	// Determine which list we're working with based on the current view
-	switch m.viewMode {
-	case ViewLibrary:
-		// For library view, use the library table
-		currentTable = &m.LibraryTable
-		listLength = len(components.GetLibrary().Files)
-
-	case ViewPlaylistTracks, ViewPlaylists:
-		// For playlists, use the appropriate playlist table
-		if m.ActivePlaylistIndex < 0 || m.ActivePlaylistIndex >= len(m.PlaylistTable) {
-			return errors.New("invalid playlist index")
-		}
-		currentTable = &m.PlaylistTable[m.ActivePlaylistIndex]
-		if m.viewMode == ViewPlaylistTracks && m.PlaylistManager.ActivePlaylist != nil {
-			listLength = len(m.PlaylistManager.ActivePlaylist.Tracks)
-		} else {
-			listLength = len(m.PlaylistManager.Playlists)
-		}
-
-	case ViewQueue:
-		// For queue view, use the queue table
-		currentTable = &m.QueueTable
-		listLength = m.Queue.Length()
-
-	default:
-		return fmt.Errorf("unsupported view mode: %v", m.viewMode)
-	}
-
-	// Ensure we have a valid table
-	if currentTable == nil {
-		return errors.New("current table is nil")
-	}
-
-	// Get current cursor position
-	currentCursor := currentTable.Cursor()
-
-	// Adjust cursor if it's out of bounds
-	if listLength == 0 {
-		currentCursor = 0
-	} else if currentCursor >= listLength {
-		currentCursor = listLength - 1
-	} else if currentCursor < 0 {
-		currentCursor = 0
-	}
-
-	// Update the cursor position
-	currentTable.SetCursor(currentCursor)
-	m.ActiveFileIndex = currentCursor
-
-	return nil
 }

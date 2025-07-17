@@ -15,7 +15,6 @@ func (m *Model) View() string {
 	playerUI := lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.renderPlayerInfo(),
-		m.renderProgressBar(),
 	)
 
 	// Status bar
@@ -37,7 +36,7 @@ func (m *Model) renderContent() string {
 		return m.renderLibraryView()
 	case ViewSearch:
 		return m.renderSearchView()
-	case ViewPlaylists:
+	case ViewPlaylistTracks:
 		return m.renderPlaylistView()
 	case ViewQueue:
 		return m.renderQueueView()
@@ -89,47 +88,19 @@ func (m *Model) renderQueueView() string {
 // renderProgressBar renders the playback progress bar
 func (m *Model) renderProgressBar() string {
 	return lipgloss.NewStyle().
-		Width(m.Width).
 		MarginTop(1).
 		Render(m.Progress.View())
-}
-
-// renderPlayingDisplay
-func (m *Model) renderPlayingDisplay() string {
-	playingStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("250"))
-	if m.AudioPlayer.Playing {
-		return playingStyle.Render("Playing")
-	}
-	return playingStyle.Render("Not Playing")
-}
-
-func (m *Model) playerModifications() string {
-	return ""
-}
-
-// renderTimeDisplay renders the current and total playback time
-func (m *Model) renderTimeDisplay() string {
-	timeStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("255"))
-
-	timeText := fmt.Sprintf("%s / %s ",
-		formatDuration(m.AudioPlayer.PlayedTime),
-		formatDuration(m.AudioPlayer.TotalTime),
-	)
-
-	return timeStyle.Render(timeText)
 }
 
 func (m *Model) renderVolumeDisplay() string {
 	volumeStyle := lipgloss.NewStyle().
 		Bold(true).
+		MarginLeft(1).
+		MarginRight(1).
 		Foreground(lipgloss.Color("250"))
 
 	if m.AudioPlayer.Volume == nil {
-		return volumeStyle.Render("Volume: 100%")
+		return volumeStyle.Render("Volume: 50%")
 	}
 
 	if m.AudioPlayer.Volume.Silent {
@@ -138,7 +109,7 @@ func (m *Model) renderVolumeDisplay() string {
 
 	// Convert the logarithmic volume to a percentage (approximate)
 	// Assuming 0.0 is 100%, and it can go higher.
-	volumePercent := (1.0 + m.AudioPlayer.Volume.Volume) * 100
+	volumePercent := m.AudioPlayer.GetVolume()
 	volumeText := fmt.Sprintf("Volume: %.0f%%", volumePercent)
 
 	return volumeStyle.Render(volumeText)
@@ -147,6 +118,8 @@ func (m *Model) renderVolumeDisplay() string {
 func (m *Model) renderCurrentTrackDisplay() string {
 	trackStyle := lipgloss.NewStyle().
 		Bold(true).
+		MarginLeft(1).
+		MarginRight(1).
 		Foreground(lipgloss.Color("255"))
 
 	if m.Queue.Current() == nil {
@@ -161,6 +134,8 @@ func (m *Model) renderCurrentTrackDisplay() string {
 func (m *Model) renderArtistDisplay() string {
 	artistStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("250")).
+		MarginLeft(1).
+		MarginRight(1).
 		Align(lipgloss.Center)
 
 	if m.Queue.Current() == nil {
@@ -187,46 +162,64 @@ func (m *Model) renderStatusBar() string {
 		Render(fmt.Sprintf(" %s | Tab: Switch View | Q: Quit", m.viewMode))
 }
 
+func (m *Model) renderPlayedTime() string {
+	playedTimeStyle := lipgloss.NewStyle().
+		MarginRight(1).
+		MarginLeft(1).
+		Render(formatDuration(m.AudioPlayer.PlayedTime))
+
+	return playedTimeStyle
+}
+
+func (m *Model) renderTotalTime() string {
+	totalTimeStyle := lipgloss.NewStyle().
+		MarginLeft(1).
+		MarginRight(1).
+		Render(formatDuration(m.AudioPlayer.TotalTime))
+
+	return totalTimeStyle
+}
+
 func (m *Model) renderPlayerInfo() string {
-
-	timeDisplayBlock := lipgloss.JoinVertical(
-		lipgloss.Left,
-		m.renderPlayingDisplay(),
-		m.renderTimeDisplay(),
-	)
-
 	trackArtistBlock := lipgloss.JoinVertical(
-		lipgloss.Center,
+		lipgloss.Left,
 		m.renderCurrentTrackDisplay(),
 		m.renderArtistDisplay(),
+	)
+
+	progressDisplayBlock := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		m.renderPlayedTime(),
+		m.renderProgressBar(),
+		m.renderTotalTime(),
 	)
 
 	volumeDisplayBlock := lipgloss.JoinVertical(
 		lipgloss.Right,
 		m.renderVolumeDisplay(),
-		"[Volume]",
 	)
 
+	playedTimeStr := formatDuration(m.AudioPlayer.PlayedTime)
+	totalTimeStr := formatDuration(m.AudioPlayer.TotalTime)
+
 	// Calculate widths for each block
-	leftWidth := lipgloss.Width(timeDisplayBlock)
+	leftWidth := lipgloss.Width(trackArtistBlock)
 	rightWidth := lipgloss.Width(volumeDisplayBlock)
 	centerWidth := m.Width - leftWidth - rightWidth
+	progressBarWidth := centerWidth - lipgloss.Width(playedTimeStr) - lipgloss.Width(totalTimeStr) - 12
+	m.Progress.Width = progressBarWidth
 
 	// Style and align each block
-	left := lipgloss.NewStyle().Width(leftWidth).Align(lipgloss.Left).MarginTop(1).Render(timeDisplayBlock)
+	left := lipgloss.NewStyle().Width(leftWidth).Align(lipgloss.Left).MarginTop(1).Render(trackArtistBlock)
+	center := lipgloss.NewStyle().Width(centerWidth).Align(lipgloss.Center).MarginTop(1).Render(progressDisplayBlock)
 	right := lipgloss.NewStyle().Width(rightWidth).Align(lipgloss.Right).MarginTop(1).Render(volumeDisplayBlock)
-	center := lipgloss.NewStyle().Width(centerWidth).Align(lipgloss.Center).MarginTop(1).Render(trackArtistBlock)
 
 	return lipgloss.JoinHorizontal(
-		lipgloss.Top,
+		lipgloss.Bottom,
 		left,
 		center,
 		right,
 	)
-}
-
-func (m *Model) renderCurrentTrack() string {
-	return m.renderCurrentTrackDisplay()
 }
 
 func formatDuration(d time.Duration) string {
